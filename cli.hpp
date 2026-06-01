@@ -149,6 +149,7 @@
 #include <windows.h>
 #else
 #include <termios.h>
+#include <unistd.h>
 #endif
 
 /*
@@ -247,6 +248,15 @@ namespace linea {
 namespace linea {
 
 namespace ANSI {
+
+inline constexpr char BEL = '\a';
+inline constexpr char BS  = '\b';
+inline constexpr char HT  = '\t';
+inline constexpr char LF  = '\n';
+inline constexpr char BT  = '\v';
+inline constexpr char FF  = '\f';
+inline constexpr char CR  = '\r';
+inline constexpr char ESC = '\033';
 
 inline constexpr char CURSOR_MOVE_HOME[]       = "\033[H";
 
@@ -1738,6 +1748,36 @@ private:
 
 namespace ui {
 
+namespace __detail {
+
+#ifndef _WIN32
+class TerminalRawMode {
+private:
+    struct termios orig_, raw_;
+
+    TerminalRawMode() {
+        tcgetattr(STDIN_FILENO, &orig_);
+        raw_ = orig_;
+        raw_.c_lflag &= ~(ICANON | ECHO);
+        tcsetattr(STDIN_FILENO, TCSANOW, &raw_);
+    }
+
+    ~TerminalRawMode() {
+        tcsetattr(STDIN_FILENO, TCSANOW, &orig_);
+    }
+};
+
+int getch() {
+    char c;
+    if (read(STDIN_FILENO, &c, 1) == 1) {
+        return c;
+    }
+    return -1s
+}
+#endif
+
+}
+
 class ProgressBar {
 public:
     struct Theme {
@@ -2413,11 +2453,11 @@ public:
     PromptSelect() {
 #ifdef _WIN32
         hConsole_ = GetStdHandle(STD_OUTPUT_HANDLE);
+        detail::enableANSI();
 #endif
     }
 
     PromptSelect& setOptions(const std::vector<std::string>& options) {
-        options_.resize(options.size());
         options_ = options;
         return *this;
     }
@@ -2428,16 +2468,16 @@ public:
     }
 
     std::string readInput() override {
-#ifdef _WIN32
-        if (options_.empty()) return "";
+        if (options_.empty()) {
+            throw std::runtime_error("PromptSelect: no options provided");
+        }
 
         int selected = 0;
-        COORD startPos = getCursorPosition();
 
-        auto render = [&]() {
-            goToXY(0, startPos.Y);
+        auto render = [&](int y) {
+            goToXY(0, y);
             std::cout << ANSI::ERASE_LINE << label_ << "\n";
-
+        
             for (size_t i = 0; i < options_.size(); ++i) {
                 std::cout << ANSI::ERASE_LINE;
                 const std::string prefix = (selected == i) ? theme_.input_color + theme_.prefix + theme_.reset_color : "  ";
@@ -2445,8 +2485,10 @@ public:
             }
             std::cout.flush();
         };
+#ifdef _WIN32
+        COORD startPos = getCursorPosition();
 
-        render();
+        render(startPos.Y);
 
         while (true) {
             int key = _getch();
@@ -2455,19 +2497,49 @@ public:
                 key = _getch();
                 if (key == 72) {
                     selected = (selected - 1 + options_.size()) % options_.size();
-                    render();
+                    render(startPos.Y);
                 } else if (key == 80) {
                     selected = (selected + 1) % options_.size();
-                    render();
+                    render(startPos.Y);
                 }
             } else if (key == ' ' || key == '\n' || key == '\r') {
                 break;
             } else if (key == 3) {
-                exit(0);
+                throw std::runtime_error("Interrupted (Ctrl+C)");
             }
         }
 
         goToXY(0, startPos.Y);
+#else
+        TerminalRawMode rawMode;
+
+        int startRow = 0;
+
+        render(startRow);
+
+        while (true) {
+            int key = __detail::getch();
+
+            if (key == ANSI::ESC) {
+                int next1 = __detail::getch();
+                int next2 = __detail::getch();
+
+                if (next1 != '[') continue;
+
+                if (next2 == 'A') { // Up
+                    selected = (selected - 1 + options_.size()) % options_.size();
+                    render(startRow);
+                } else if (next2 == 'B') { // Down
+                    selected = (selected + 1) % options_.size();
+                    render(startRow);
+                }
+            } else if (key == ' ' || key == '\n') {
+                break;
+            } else if (key == 3) {
+                throw std::runtime_error("Interrupted (Ctrl+C)");
+            }
+        }
+#endif
 
         size_t totalLines = options_.size() + 1;
         for (size_t i = 0; i < totalLines; ++i) {
@@ -2478,9 +2550,6 @@ public:
         goToXY(0, startPos.Y);
 
         return options_[selected];
-#else
-        return "";
-#endif
     }
 
 private:
@@ -2503,6 +2572,10 @@ private:
         coord.X = x;
         coord.Y = y;
         SetConsoleCursorPosition(hConsole_, coord);
+    }
+#else
+    void goToXY(int x, int y) {
+        std::cout << ANSI::CURSOR_MOVE(x + 1, y + 1);
     }
 #endif
 };
