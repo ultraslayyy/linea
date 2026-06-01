@@ -93,8 +93,6 @@
  *   - Runtime completions (suggest files, enum values, subcommands dynamically, etc.)
  * - Interactive modes (linea::ui::prompt_)
  *   - Prompts:
- *     - Text
- *     - Password
  *     - Confirm
  *     - Select (Arrow keys + space bar/enter)
  *   - Fallback when non-interactive
@@ -147,7 +145,10 @@
 #include <vector>
 
 #ifdef _WIN32
+#include <conio.h>
 #include <windows.h>
+#else
+#include <termios.h>
 #endif
 
 /*
@@ -245,12 +246,605 @@ namespace linea {
 
 namespace linea {
 
+namespace ANSI {
+
+inline constexpr char CURSOR_MOVE_HOME[]       = "\033[H";
+
+inline std::string CURSOR_MOVE(int l, int c)           { return "\033[" + std::to_string(l) + ";" + std::to_string(c) + "H"; /*Can also use 'f' instead of 'H'*/ }
+inline std::string CUSOR_MOVE_ROW(int v)               { return "\033[" + std::to_string(v) + "d"; }
+inline std::string CURSOR_MOVE_UP(int v)               { return "\033[" + std::to_string(v) + "A"; }
+inline std::string CURSOR_MOVE_DOWN(int v)             { return "\033[" + std::to_string(v) + "B"; }
+inline std::string CURSOR_MODE_DOWN_ROWS(int v)        { return "\033[" + std::to_string(v) + "e"; }
+inline std::string CURSOR_MOVE_RIGHT(int v)            { return "\033[" + std::to_string(v) + "C"; }
+inline std::string CURSOR_MOVE_LEFT(int v)             { return "\033[" + std::to_string(v) + "D"; }
+inline std::string CURSOR_MOVE_START_LINE_DOWN(int v)  { return "\033[" + std::to_string(v) + "E"; }
+inline std::string CURSOR_MOVE_START_LINE_UP(int v)    { return "\033[" + std::to_string(v) + "F"; }
+inline std::string CURSOR_MOVE_COLUMN(int v)           { return "\033[" + std::to_string(v) + "G"; }
+
+inline constexpr char CURSOR_REQUEST_POS[]     = "\033[6n";
+inline constexpr char CURSOR_REVERSE_INDEX[]   = "\033M";
+inline constexpr char CURSOR_SAVE_POS_DEC[]    = "\0337";
+inline constexpr char CURSOR_RESTORE_POS_DEC[] = "\0338";
+inline constexpr char CURSOR_SAVE_POS_SCO[]    = "\033[s";
+inline constexpr char CURSOR_RESTORE_POS_SCO[] = "\033[u";
+
+inline constexpr char TAB_STOP_SET_COL[]       = "\033H";
+inline constexpr char TAB_STOP_CLEAR_COL[]     = "\033[g";
+inline constexpr char TAB_STOP_CLEAR_ALL[]     = "\033[3g";
+inline constexpr char TAB_STOP_MOVE_TO_NEXT[]  = "\t";
+
+inline constexpr char DEVICE_STATUS_REPORT[]        = "\033[5n";
+inline constexpr char DEVICE_PRIMARY_ATTRIBUTES[]   = "\033[c";
+inline constexpr char DEVICE_SECONDARY_ATTRIBUTES[] = "\033[>c";
+
+inline constexpr char TERMINAL_REQUEST_ID[]         = "\033[0c";
+inline constexpr char TERMINAL_RESET_SOFT[]         = "\033[!p";
+inline constexpr char TERMINAL_RESET_FULL[]         = "\033c";
+
+inline constexpr char ERASE_IN_DISPLAY[]            = "\033[J";
+inline constexpr char ERASE_FROM_CURSOR_TO_SCREEN[] = "\033[0J";
+inline constexpr char ERASE_TO_CURSOR_FROM_SCREEN[] = "\033[1J";
+inline constexpr char ERASE_SCREEN[]                = "\033[2J";
+inline constexpr char ERASE_SAVED_LINES[]           = "\033[3J";
+inline constexpr char ERASE_FROM_CURSOR_TO_LINE[]   = "\033[K";
+inline constexpr char ERASE_TO_CURSOR_FROM_LINE[]   = "\033[1K";
+inline constexpr char ERASE_LINE[]                  = "\033[2K";
+
+inline constexpr char CLEAR_SCREEN_AND_HOME[]       = "\033[2J\033[H";
+
+inline constexpr char SCROLL_UP_ONE[]                        = "\033[S";
+inline constexpr char SCROLL_DOWN_ONE[]                      = "\033[T";
+inline constexpr char RESET_SCROLL_REGION[]                  = "\033[r";
+
+inline std::string    SCROLL_UP(int n)                { return "\033[" + std::to_string(n) + "S"; }
+inline std::string    SCROLL_DOWN(int n)              { return "\033[" + std::to_string(n) + "T"; }
+inline std::string    SET_SCROLL_REGION(int t, int b) { return "\033[" + std::to_string(t) + ";" + std::to_string(b) + "r"; }
+inline std::string    INSERT_CHARS(int n)             { return "\033[" + std::to_string(n) + "@"; }
+inline std::string    DELETE_CHARS(int n)             { return "\033[" + std::to_string(n) + "P"; }
+inline std::string    INSERT_LINES(int n)             { return "\033[" + std::to_string(n) + "L"; }
+inline std::string    DELETE_LINES(int n)             { return "\033[" + std::to_string(n) + "M"; }
+
+inline constexpr char RESET[]        = "\033[0m";
+inline constexpr char BOLD[]         = "\033[1m";
+inline constexpr char DIM[]          = "\033[2m";
+inline constexpr char ITALIC[]       = "\033[3m";
+inline constexpr char UNDERLINE[]    = "\033[4m";
+inline constexpr char BLINKING[]     = "\033[5m";
+inline constexpr char REVERSE[]      = "\033[7m";
+inline constexpr char INVISIBLE[]    = "\033[8m";
+inline constexpr char STRIKETHOUGH[] = "\033[9m";
+
+inline constexpr char BOLD_RESET[]         = "\033[22m";
+inline constexpr char DIM_RESET[]          = "\033[22m";
+inline constexpr char ITALIC_RESET[]       = "\033[23m";
+inline constexpr char UNDERLINE_RESET[]    = "\033[24m";
+inline constexpr char BLINKING_RESET[]     = "\033[25m";
+inline constexpr char REVERSE_RESET[]      = "\033[27m";
+inline constexpr char INVISIBLE_RESET[]    = "\033[28m";
+inline constexpr char STRIKETHOUGH_RESET[] = "\033[29m";
+
+inline constexpr char FG_BLACK[]   = "\033[30m";
+inline constexpr char FG_RED[]     = "\033[31m";
+inline constexpr char FG_GREEN[]   = "\033[32m";
+inline constexpr char FG_YELLOW[]  = "\033[33m";
+inline constexpr char FG_BLUE[]    = "\033[34m";
+inline constexpr char FG_MAGENTA[] = "\033[35m";
+inline constexpr char FG_CYAN[]    = "\033[36m";
+inline constexpr char FG_WHITE[]   = "\033[37m";
+inline constexpr char FG_DEFAULT[] = "\033[39m";
+
+inline std::string FG_CUSTOM_256(unsigned v)                         { return "\033[38;5;" + detail::u8(v) + "m"; }
+inline std::string FG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[38;2;" + detail::rgbConstruct(r,g,b) + "m"; }
+
+inline constexpr char BG_BLACK[]   = "\033[40m";
+inline constexpr char BG_RED[]     = "\033[41m";
+inline constexpr char BG_GREEN[]   = "\033[42m";
+inline constexpr char BG_YELLOW[]  = "\033[43m";
+inline constexpr char BG_BLUE[]    = "\033[44m";
+inline constexpr char BG_MAGENTA[] = "\033[45m";
+inline constexpr char BG_CYAN[]    = "\033[46m";
+inline constexpr char BG_WHITE[]   = "\033[47m";
+inline constexpr char BG_DEFAULT[] = "\033[49m";
+
+inline std::string BG_CUSTOM_256(unsigned v)                         { return "\033[48;5;" + detail::u8(v) + "m"; }
+inline std::string BG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[48;2;" + detail::rgbConstruct(r,g,b) + "m"; }
+
+inline constexpr char FG_BLACK_BRIGHT[]   = "\033[90m";
+inline constexpr char FG_RED_BRIGHT[]     = "\033[91m";
+inline constexpr char FG_GREEN_BRIGHT[]   = "\033[92m";
+inline constexpr char FG_YELLOW_BRIGHT[]  = "\033[93m";
+inline constexpr char FG_BLUE_BRIGHT[]    = "\033[94m";
+inline constexpr char FG_MAGENTA_BRIGHT[] = "\033[95m";
+inline constexpr char FG_CYAN_BRIGHT[]    = "\033[96m";
+inline constexpr char FG_WHITE_BRIGHT[]   = "\033[97m";
+
+inline constexpr char BG_BLACK_BRIGHT[]   = "\033[100m";
+inline constexpr char BG_RED_BRIGHT[]     = "\033[101m";
+inline constexpr char BG_GREEN_BRIGHT[]   = "\033[102m";
+inline constexpr char BG_YELLOW_BRIGHT[]  = "\033[103m";
+inline constexpr char BG_BLUE_BRIGHT[]    = "\033[104m";
+inline constexpr char BG_MAGENTA_BRIGHT[] = "\033[105m";
+inline constexpr char BG_CYAN_BRIGHT[]    = "\033[106m";
+inline constexpr char BG_WHITE_BRIGHT[]   = "\033[107m";
+
+// Legacy modes (mostly unsupported now)
+inline constexpr char MODE_40X25_MONO[]       = "\033[=0h";
+inline constexpr char MODE_40X25_COLOR[]      = "\033[=1h";
+inline constexpr char MODE_80X25_MONO[]       = "\033[=2h";
+inline constexpr char MODE_80X25_COLOR[]      = "\033[=3h";
+inline constexpr char MODE_320X200_4COLOR[]   = "\033[=4h";
+inline constexpr char MODE_320X200_MONO[]     = "\033[=5h";
+inline constexpr char MODE_640X200_MONO[]     = "\033[=6h";
+inline constexpr char MODE_LINE_WRAPPING[]    = "\033[=7h";
+inline constexpr char MODE_320X200_COLOR[]    = "\033[=13h";
+inline constexpr char MODE_640X200_16COLOR[]  = "\033[=14h";
+inline constexpr char MODE_640X350_2MONO[]    = "\033[=15h";
+inline constexpr char MODE_640X350_16COLOR[]  = "\033[=16h";
+inline constexpr char MODE_640X480_2MONO[]    = "\033[=17h";
+inline constexpr char MODE_640X480_16COLOR[]  = "\033[=18h";
+inline constexpr char MODE_320X200_256COLOR[] = "\033[=19h";
+
+inline constexpr char MODE_40X25_MONO_RESET[]       = "\033[=0l";
+inline constexpr char MODE_40X25_COLOR_RESET[]      = "\033[=1l";
+inline constexpr char MODE_80X25_MONO_RESET[]       = "\033[=2l";
+inline constexpr char MODE_80X25_COLOR_RESET[]      = "\033[=3l";
+inline constexpr char MODE_320X200_4COLOR_RESET[]   = "\033[=4l";
+inline constexpr char MODE_320X200_MONO_RESET[]     = "\033[=5l";
+inline constexpr char MODE_640X200_MONO_RESET[]     = "\033[=6l";
+inline constexpr char MODE_LINE_WRAPPING_RESET[]    = "\033[=7l";
+inline constexpr char MODE_320X200_COLOR_RESET[]    = "\033[=13l";
+inline constexpr char MODE_640X200_16COLOR_RESET[]  = "\033[=14l";
+inline constexpr char MODE_640X350_2MONO_RESET[]    = "\033[=15l";
+inline constexpr char MODE_640X350_16COLOR_RESET[]  = "\033[=16l";
+inline constexpr char MODE_640X480_2MONO_RESET[]    = "\033[=17l";
+inline constexpr char MODE_640X480_16COLOR_RESET[]  = "\033[=18l";
+inline constexpr char MODE_320X200_256COLOR_RESET[] = "\033[=19l";
+
+inline constexpr char CHAR_SET_LINE_DRAWING[] = "\033(0";
+inline constexpr char CHAR_SET_ASCII[]        = "\033(B";
+
+// "While these modes may be supported by the most terminals, some may not work in multiplexers like tmux."
+// PMODE = Private Mode
+inline constexpr char PMODE_CURSOR_KEYS_APPLICATION[]  = "\033[?1h";
+inline constexpr char PMODE_CURSOR_KEYS_NORMAL[]       = "\033[?1l";
+inline constexpr char PMODE_WRAP_ENABLE[]              = "\033[?7h";
+inline constexpr char PMODE_WRAP_DISABLE[]             = "\033[?7l";
+inline constexpr char PMODE_CURSOR_STEADY[]            = "\033[?12l";
+inline constexpr char PMODE_CURSOR_BLINKING[]          = "\033[?12h";
+inline constexpr char PMODE_CURSOR_INVISIBLE[]         = "\033[?25l";
+inline constexpr char PMODE_CURSOR_VISIBLE[]           = "\033[?25h";
+inline constexpr char PMODE_RESTORE_SCREEN[]           = "\033[?47l";
+inline constexpr char PMODE_SAVE_SCREEN[]              = "\033[?47h";
+inline constexpr char PMODE_MOUSE_ENABLE_BASIC[]       = "\033[?1000h";
+inline constexpr char PMODE_MOUSE_DISABLE[]            = "\033[?1000l";
+inline constexpr char PMODE_MOUSE_ENABLE_BUTTON_DRAG[] = "\033[?1003h";
+inline constexpr char PMODE_SGR_EXTENDED_MODE[]        = "\033[?1006h";
+inline constexpr char PMODE_ENABLE_ALT_BUFFER[]        = "\033[?1049h";
+inline constexpr char PMODE_DISABLE_ALT_BUFFER[]       = "\033[?1049l";
+inline constexpr char PMODE_BRACKETED_PASTE_ON[]       = "\033[?2004h";
+inline constexpr char PMODE_BRACKETED_PASTE_OFF[]      = "\033[?200hl";
+
+// SGR extensions
+/**
+ * Messy. Many terminals see it as "bold off", some ignore it,
+ * and it overlaps with 22 alot. NON-PORTABLE
+ */
+inline constexpr char SGR_DOUBLE_UNDERLINE[]     = "\033[21m";
+inline constexpr char SGR_FRAMED[]               = "\033[51m";
+inline constexpr char SGR_ENCIRCLED[]            = "\033[52m";
+inline constexpr char SGR_OVERLINE[]             = "\033[53m";
+inline constexpr char SGR_FRAMED_ENCIRCLED_OFF[] = "\033[54m";
+inline constexpr char SGR_OVERLINE_OFF[]         = "\033[55m";
+
+inline std::string HYPERLINK(const std::string& url, const std::string& text, bool st = false) {
+    const std::string t = st ? "\033\\" : "\a";
+    return "\033]8;;" + url + t + text + "\033]8;;" + t;
+}
+inline std::string SET_TITLE(const std::string& title) { return "\033]0;" + title + "\007"; }
+inline std::string SET_PALETTE_COLOR(int i, unsigned r, unsigned g, unsigned b, bool st = false) {
+    const std::string t = st ? "\033\\" : "\a";
+    using namespace linea::detail;
+    return "\033]4;" + std::to_string(i) + ";rgb:" + u8(r) + "/" + u8(g) + "/" + u8(b) + t;
+}
+inline std::string SET_CLIPBOARD_OSC_52(const std::string& base64, bool st = false) {
+    const std::string t = st ? "\033\\" : "\a";
+    return "\033]52;c;" + base64 + t;
+}
+
+inline constexpr char RESET_PALETTE[] = "\033]104\033\\";
+
+// xterm extensions
+inline constexpr char XTERM_WINDOW_GET_SIZE_PX[]    = "\033[14t";
+inline constexpr char XTERM_TERMINAL_GET_SIZE_CHR[] = "\033[18t";
+
+// Keyboard strings
+namespace KBD {
+
+namespace __detail {
+
+class Item {
+public:
+    constexpr std::string_view value() const {
+        return value_;
+    }
+
+private:
+    std::string_view value_;
+    constexpr Item(std::string_view v) : value_(v) {}
+
+    friend constexpr Item make_item(std::string_view);
+};
+
+static inline constexpr Item make_item(std::string_view v) {
+    return Item(v);
+}
+
+} // namespace __detail
+
+constexpr __detail::Item F1                         = __detail::make_item("0;59");
+constexpr __detail::Item F2                         = __detail::make_item("0;60");
+constexpr __detail::Item F3                         = __detail::make_item("0;61");
+constexpr __detail::Item F4                         = __detail::make_item("0;62");
+constexpr __detail::Item F5                         = __detail::make_item("0;63");
+constexpr __detail::Item F6                         = __detail::make_item("0;64");
+constexpr __detail::Item F7                         = __detail::make_item("0;65");
+constexpr __detail::Item F8                         = __detail::make_item("0;66");
+constexpr __detail::Item F9                         = __detail::make_item("0;67");
+constexpr __detail::Item F10                        = __detail::make_item("0;68");
+constexpr __detail::Item F11                        = __detail::make_item("0;133");
+constexpr __detail::Item F12                        = __detail::make_item("0;134");
+constexpr __detail::Item HOME_NUMPAD                = __detail::make_item("0;71");
+constexpr __detail::Item UP_NUMPAD                  = __detail::make_item("0;72");
+constexpr __detail::Item PAGE_UP_NUMPAD             = __detail::make_item("0;73");
+constexpr __detail::Item LEFT_NUMPAD                = __detail::make_item("0;75");
+constexpr __detail::Item RIGHT_NUMPAD               = __detail::make_item("0;77");
+constexpr __detail::Item END_NUMPAD                 = __detail::make_item("0;79");
+constexpr __detail::Item DOWN_NUMPAD                = __detail::make_item("0;80");
+constexpr __detail::Item PAGE_DOWN_NUMPAD           = __detail::make_item("0;81");
+constexpr __detail::Item INSERT_NUMPAD              = __detail::make_item("0;82");
+constexpr __detail::Item DELETE_NUMPAD              = __detail::make_item("0;83");
+constexpr __detail::Item HOME                       = __detail::make_item("224;71");
+constexpr __detail::Item UP                         = __detail::make_item("224;72");
+constexpr __detail::Item PAGE_UP                    = __detail::make_item("224;73");
+constexpr __detail::Item LEFT                       = __detail::make_item("224;75");
+constexpr __detail::Item RIGHT                      = __detail::make_item("224;77");
+constexpr __detail::Item END                        = __detail::make_item("224;79");
+constexpr __detail::Item DOWN                       = __detail::make_item("224;80");
+constexpr __detail::Item PAGE_DOWN                  = __detail::make_item("224;81");
+constexpr __detail::Item INSERT                     = __detail::make_item("224;82");
+constexpr __detail::Item KDELETE                    = __detail::make_item("224;83");
+constexpr __detail::Item BACKSPACE                  = __detail::make_item("8");
+constexpr __detail::Item ENTER                      = __detail::make_item("13");
+constexpr __detail::Item TAB                        = __detail::make_item("9");
+constexpr __detail::Item KNULL                      = __detail::make_item("0;3");
+constexpr __detail::Item A                          = __detail::make_item("97");
+constexpr __detail::Item B                          = __detail::make_item("98");
+constexpr __detail::Item C                          = __detail::make_item("99");
+constexpr __detail::Item D                          = __detail::make_item("100");
+constexpr __detail::Item E                          = __detail::make_item("101");
+constexpr __detail::Item F                          = __detail::make_item("102");
+constexpr __detail::Item G                          = __detail::make_item("103");
+constexpr __detail::Item H                          = __detail::make_item("104");
+constexpr __detail::Item I                          = __detail::make_item("105");
+constexpr __detail::Item J                          = __detail::make_item("106");
+constexpr __detail::Item K                          = __detail::make_item("107");
+constexpr __detail::Item L                          = __detail::make_item("108");
+constexpr __detail::Item M                          = __detail::make_item("109");
+constexpr __detail::Item N                          = __detail::make_item("110");
+constexpr __detail::Item O                          = __detail::make_item("111");
+constexpr __detail::Item P                          = __detail::make_item("112");
+constexpr __detail::Item Q                          = __detail::make_item("113");
+constexpr __detail::Item R                          = __detail::make_item("114");
+constexpr __detail::Item S                          = __detail::make_item("115");
+constexpr __detail::Item T                          = __detail::make_item("116");
+constexpr __detail::Item U                          = __detail::make_item("117");
+constexpr __detail::Item V                          = __detail::make_item("118");
+constexpr __detail::Item W                          = __detail::make_item("119");
+constexpr __detail::Item X                          = __detail::make_item("120");
+constexpr __detail::Item Y                          = __detail::make_item("121");
+constexpr __detail::Item Z                          = __detail::make_item("122");
+constexpr __detail::Item K0                         = __detail::make_item("48");
+constexpr __detail::Item K1                         = __detail::make_item("49");
+constexpr __detail::Item K2                         = __detail::make_item("50");
+constexpr __detail::Item K3                         = __detail::make_item("51");
+constexpr __detail::Item K4                         = __detail::make_item("52");
+constexpr __detail::Item K5                         = __detail::make_item("53");
+constexpr __detail::Item K6                         = __detail::make_item("54");
+constexpr __detail::Item K7                         = __detail::make_item("55");
+constexpr __detail::Item K8                         = __detail::make_item("56");
+constexpr __detail::Item K9                         = __detail::make_item("57");
+constexpr __detail::Item HYPHEN                     = __detail::make_item("45");
+constexpr __detail::Item EQUALS                     = __detail::make_item("61");
+constexpr __detail::Item LEFT_SQUARE_BRACKET        = __detail::make_item("91");
+constexpr __detail::Item RIGHT_SQUARE_BRACKET       = __detail::make_item("93");
+constexpr __detail::Item BACKSLASH                  = __detail::make_item("92");
+constexpr __detail::Item SEMICOLON                  = __detail::make_item("59");
+constexpr __detail::Item APOSTROPHE                 = __detail::make_item("39");
+constexpr __detail::Item COMMA                      = __detail::make_item("44");
+constexpr __detail::Item PERIOD                     = __detail::make_item("46");
+constexpr __detail::Item SLASH                      = __detail::make_item("47");
+constexpr __detail::Item BACKTICK                   = __detail::make_item("96");
+constexpr __detail::Item ENTER_NUMPAD               = __detail::make_item("13");
+constexpr __detail::Item ASTERISK_NUMPAD            = __detail::make_item("42");
+constexpr __detail::Item PLUS_NUMPAD                = __detail::make_item("43");
+constexpr __detail::Item HYPHEN_NUMPAD              = __detail::make_item("45");
+constexpr __detail::Item SLASH_NUMPAD               = __detail::make_item("47");
+constexpr __detail::Item K5_NUMPAD                  = __detail::make_item("0;76");
+
+constexpr __detail::Item SHIFT_F1                   = __detail::make_item("0;84");
+constexpr __detail::Item SHIFT_F2                   = __detail::make_item("0;85");
+constexpr __detail::Item SHIFT_F3                   = __detail::make_item("0;86");
+constexpr __detail::Item SHIFT_F4                   = __detail::make_item("0;87");
+constexpr __detail::Item SHIFT_F5                   = __detail::make_item("0;88");
+constexpr __detail::Item SHIFT_F6                   = __detail::make_item("0;89");
+constexpr __detail::Item SHIFT_F7                   = __detail::make_item("0;90");
+constexpr __detail::Item SHIFT_F8                   = __detail::make_item("0;91");
+constexpr __detail::Item SHIFT_F9                   = __detail::make_item("0;92");
+constexpr __detail::Item SHIFT_F10                  = __detail::make_item("0;93");
+constexpr __detail::Item SHIFT_F11                  = __detail::make_item("0;135");
+constexpr __detail::Item SHIFT_F12                  = __detail::make_item("0;136");
+constexpr __detail::Item SHIFT_HOME_NUMPAD          = __detail::make_item("55");
+constexpr __detail::Item SHIFT_UP_NUMPAD            = __detail::make_item("56");
+constexpr __detail::Item SHIFT_PAGE_UP_NUMPAD       = __detail::make_item("57");
+constexpr __detail::Item SHIFT_LEFT_NUMPAD          = __detail::make_item("52");
+constexpr __detail::Item SHIFT_RIGHT_NUMPAD         = __detail::make_item("54");
+constexpr __detail::Item SHIFT_END_NUMPAD           = __detail::make_item("49");
+constexpr __detail::Item SHIFT_DOWN_NUMPAD          = __detail::make_item("50");
+constexpr __detail::Item SHIFT_PAGE_DOWN_NUMPAD     = __detail::make_item("51");
+constexpr __detail::Item SHIFT_INSERT_NUMPAD        = __detail::make_item("48");
+constexpr __detail::Item SHIFT_DELETE_NUMPAD        = __detail::make_item("46");
+constexpr __detail::Item SHIFT_HOME                 = __detail::make_item("224;71");
+constexpr __detail::Item SHIFT_UP                   = __detail::make_item("224;72");
+constexpr __detail::Item SHIFT_PAGE_UP              = __detail::make_item("224;73");
+constexpr __detail::Item SHIFT_LEFT                 = __detail::make_item("224;75");
+constexpr __detail::Item SHIFT_RIGHT                = __detail::make_item("224;77");
+constexpr __detail::Item SHIFT_END                  = __detail::make_item("224;79");
+constexpr __detail::Item SHIFT_DOWN                 = __detail::make_item("224;80");
+constexpr __detail::Item SHIFT_PAGE_DOWN            = __detail::make_item("224;81");
+constexpr __detail::Item SHIFT_INSERT               = __detail::make_item("224;82");
+constexpr __detail::Item SHIFT_KDELETE              = __detail::make_item("224;83");
+constexpr __detail::Item SHIFT_BACKSPACE            = __detail::make_item("8");
+constexpr __detail::Item SHIFT_TAB                  = __detail::make_item("0;15");
+constexpr __detail::Item SHIFT_A                    = __detail::make_item("65");
+constexpr __detail::Item SHIFT_B                    = __detail::make_item("66");
+constexpr __detail::Item SHIFT_C                    = __detail::make_item("67");
+constexpr __detail::Item SHIFT_D                    = __detail::make_item("68");
+constexpr __detail::Item SHIFT_E                    = __detail::make_item("69");
+constexpr __detail::Item SHIFT_F                    = __detail::make_item("70");
+constexpr __detail::Item SHIFT_G                    = __detail::make_item("71");
+constexpr __detail::Item SHIFT_H                    = __detail::make_item("72");
+constexpr __detail::Item SHIFT_I                    = __detail::make_item("73");
+constexpr __detail::Item SHIFT_J                    = __detail::make_item("74");
+constexpr __detail::Item SHIFT_K                    = __detail::make_item("75");
+constexpr __detail::Item SHIFT_L                    = __detail::make_item("76");
+constexpr __detail::Item SHIFT_M                    = __detail::make_item("77");
+constexpr __detail::Item SHIFT_N                    = __detail::make_item("78");
+constexpr __detail::Item SHIFT_O                    = __detail::make_item("79");
+constexpr __detail::Item SHIFT_P                    = __detail::make_item("80");
+constexpr __detail::Item SHIFT_Q                    = __detail::make_item("81");
+constexpr __detail::Item SHIFT_R                    = __detail::make_item("82");
+constexpr __detail::Item SHIFT_S                    = __detail::make_item("83");
+constexpr __detail::Item SHIFT_T                    = __detail::make_item("84");
+constexpr __detail::Item SHIFT_U                    = __detail::make_item("85");
+constexpr __detail::Item SHIFT_V                    = __detail::make_item("86");
+constexpr __detail::Item SHIFT_W                    = __detail::make_item("87");
+constexpr __detail::Item SHIFT_X                    = __detail::make_item("88");
+constexpr __detail::Item SHIFT_Y                    = __detail::make_item("89");
+constexpr __detail::Item SHIFT_Z                    = __detail::make_item("90");
+constexpr __detail::Item SHIFT_K0                   = __detail::make_item("41");
+constexpr __detail::Item SHIFT_K1                   = __detail::make_item("33");
+constexpr __detail::Item SHIFT_K2                   = __detail::make_item("64");
+constexpr __detail::Item SHIFT_K3                   = __detail::make_item("35");
+constexpr __detail::Item SHIFT_K4                   = __detail::make_item("36");
+constexpr __detail::Item SHIFT_K5                   = __detail::make_item("37");
+constexpr __detail::Item SHIFT_K6                   = __detail::make_item("94");
+constexpr __detail::Item SHIFT_K7                   = __detail::make_item("38");
+constexpr __detail::Item SHIFT_K8                   = __detail::make_item("42");
+constexpr __detail::Item SHIFT_K9                   = __detail::make_item("40");
+constexpr __detail::Item SHIFT_HYPHEN               = __detail::make_item("95");
+constexpr __detail::Item SHIFT_EQUALS               = __detail::make_item("43");
+constexpr __detail::Item SHIFT_LEFT_SQUARE_BRACKET  = __detail::make_item("123");
+constexpr __detail::Item SHIFT_RIGHT_SQUARE_BRACKET = __detail::make_item("125");
+constexpr __detail::Item SHIFT_BACKSLASH            = __detail::make_item("124");
+constexpr __detail::Item SHIFT_SEMICOLON            = __detail::make_item("58");
+constexpr __detail::Item SHIFT_APOSTROPHE           = __detail::make_item("34");
+constexpr __detail::Item SHIFT_COMMA                = __detail::make_item("60");
+constexpr __detail::Item SHIFT_PERIOD               = __detail::make_item("62");
+constexpr __detail::Item SHIFT_SLASH                = __detail::make_item("63");
+constexpr __detail::Item SHIFT_BACKTICK             = __detail::make_item("126");
+constexpr __detail::Item SHIFT_ASTERISK_NUMPAD      = __detail::make_item("0;144");
+constexpr __detail::Item SHIFT_PLUS_NUMPAD          = __detail::make_item("43");
+constexpr __detail::Item SHIFT_HYPHEN_NUMPAD        = __detail::make_item("45");
+constexpr __detail::Item SHIFT_SLASH_NUMPAD         = __detail::make_item("47");
+constexpr __detail::Item SHIFT_K5_NUMPAD            = __detail::make_item("53");
+
+constexpr __detail::Item CTRL_F1                    = __detail::make_item("0;94");
+constexpr __detail::Item CTRL_F2                    = __detail::make_item("0;95");
+constexpr __detail::Item CTRL_F3                    = __detail::make_item("0;96");
+constexpr __detail::Item CTRL_F4                    = __detail::make_item("0;97");
+constexpr __detail::Item CTRL_F5                    = __detail::make_item("0;98");
+constexpr __detail::Item CTRL_F6                    = __detail::make_item("0;99");
+constexpr __detail::Item CTRL_F7                    = __detail::make_item("0;100");
+constexpr __detail::Item CTRL_F8                    = __detail::make_item("0;101");
+constexpr __detail::Item CTRL_F9                    = __detail::make_item("0;102");
+constexpr __detail::Item CTRL_F10                   = __detail::make_item("0;103");
+constexpr __detail::Item CTRL_F11                   = __detail::make_item("0;137");
+constexpr __detail::Item CTRL_F12                   = __detail::make_item("0;138");
+constexpr __detail::Item CTRL_HOME_NUMPAD           = __detail::make_item("0;119");
+constexpr __detail::Item CTRL_UP_NUMPAD             = __detail::make_item("0;141");
+constexpr __detail::Item CTRL_PAGE_UP_NUMPAD        = __detail::make_item("0;132");
+constexpr __detail::Item CTRL_LEFT_NUMPAD           = __detail::make_item("0;115");
+constexpr __detail::Item CTRL_RIGHT_NUMPAD          = __detail::make_item("0;116");
+constexpr __detail::Item CTRL_END_NUMPAD            = __detail::make_item("0;117");
+constexpr __detail::Item CTRL_DOWN_NUMPAD           = __detail::make_item("0;145");
+constexpr __detail::Item CTRL_PAGE_DOWN_NUMPAD      = __detail::make_item("0;118");
+constexpr __detail::Item CTRL_INSERT_NUMPAD         = __detail::make_item("0;146");
+constexpr __detail::Item CTRL_DELETE_NUMPAD         = __detail::make_item("0;147");
+constexpr __detail::Item CTRL_HOME                  = __detail::make_item("224;119");
+constexpr __detail::Item CTRL_UP                    = __detail::make_item("224;141");
+constexpr __detail::Item CTRL_PAGE_UP               = __detail::make_item("224;132");
+constexpr __detail::Item CTRL_LEFT                  = __detail::make_item("224;115");
+constexpr __detail::Item CTRL_RIGHT                 = __detail::make_item("224;116");
+constexpr __detail::Item CTRL_END                   = __detail::make_item("224;117");
+constexpr __detail::Item CTRL_DOWN                  = __detail::make_item("224;145");
+constexpr __detail::Item CTRL_PAGE_DOWN             = __detail::make_item("224;118");
+constexpr __detail::Item CTRL_INSERT                = __detail::make_item("224;146");
+constexpr __detail::Item CTRL_KDELETE               = __detail::make_item("224;147");
+constexpr __detail::Item CTRL_PRINT_SCREEN          = __detail::make_item("0;114");
+constexpr __detail::Item CTRL_PAUSE_BREAK           = __detail::make_item("0;0");
+constexpr __detail::Item CTRL_BACKSPACE             = __detail::make_item("127");
+constexpr __detail::Item CTRL_ENTER                 = __detail::make_item("10");
+constexpr __detail::Item CTRL_TAB                   = __detail::make_item("0;148");
+constexpr __detail::Item CTRL_A                     = __detail::make_item("1");
+constexpr __detail::Item CTRL_B                     = __detail::make_item("2");
+constexpr __detail::Item CTRL_C                     = __detail::make_item("3");
+constexpr __detail::Item CTRL_D                     = __detail::make_item("4");
+constexpr __detail::Item CTRL_E                     = __detail::make_item("5");
+constexpr __detail::Item CTRL_F                     = __detail::make_item("6");
+constexpr __detail::Item CTRL_G                     = __detail::make_item("7");
+constexpr __detail::Item CTRL_H                     = __detail::make_item("8");
+constexpr __detail::Item CTRL_I                     = __detail::make_item("9");
+constexpr __detail::Item CTRL_J                     = __detail::make_item("10");
+constexpr __detail::Item CTRL_K                     = __detail::make_item("11");
+constexpr __detail::Item CTRL_L                     = __detail::make_item("12");
+constexpr __detail::Item CTRL_M                     = __detail::make_item("13");
+constexpr __detail::Item CTRL_N                     = __detail::make_item("14");
+constexpr __detail::Item CTRL_O                     = __detail::make_item("15");
+constexpr __detail::Item CTRL_P                     = __detail::make_item("16");
+constexpr __detail::Item CTRL_Q                     = __detail::make_item("17");
+constexpr __detail::Item CTRL_R                     = __detail::make_item("18");
+constexpr __detail::Item CTRL_S                     = __detail::make_item("19");
+constexpr __detail::Item CTRL_T                     = __detail::make_item("20");
+constexpr __detail::Item CTRL_U                     = __detail::make_item("21");
+constexpr __detail::Item CTRL_V                     = __detail::make_item("22");
+constexpr __detail::Item CTRL_W                     = __detail::make_item("23");
+constexpr __detail::Item CTRL_X                     = __detail::make_item("24");
+constexpr __detail::Item CTRL_Y                     = __detail::make_item("25");
+constexpr __detail::Item CTRL_Z                     = __detail::make_item("26");
+constexpr __detail::Item CTRL_K2                    = __detail::make_item("0");
+constexpr __detail::Item CTRL_K6                    = __detail::make_item("30");
+constexpr __detail::Item CTRL_HYPHEN                = __detail::make_item("31");
+constexpr __detail::Item CTRL_LEFT_SQUARE_BRACKET   = __detail::make_item("27");
+constexpr __detail::Item CTRL_RIGHT_SQUARE_BRACKET  = __detail::make_item("29");
+constexpr __detail::Item CTRL_BACKSLASH             = __detail::make_item("28");
+constexpr __detail::Item CTRL_ENTER_NUMPAD          = __detail::make_item("10");
+constexpr __detail::Item CTRL_ASTERISK_NUMPAD       = __detail::make_item("0;78");
+constexpr __detail::Item CTRL_PLUS_NUMPAD           = __detail::make_item("0;150");
+constexpr __detail::Item CTRL_HYPHEN_NUMPAD         = __detail::make_item("0;149");
+constexpr __detail::Item CTRL_SLASH_NUMPAD          = __detail::make_item("0;142");
+constexpr __detail::Item CTRL_K5_NUMPAD             = __detail::make_item("0;143");
+
+constexpr __detail::Item ALT_F1                     = __detail::make_item("0;104");
+constexpr __detail::Item ALT_F2                     = __detail::make_item("0;105");
+constexpr __detail::Item ALT_F3                     = __detail::make_item("0;106");
+constexpr __detail::Item ALT_F4                     = __detail::make_item("0;107");
+constexpr __detail::Item ALT_F5                     = __detail::make_item("0;108");
+constexpr __detail::Item ALT_F6                     = __detail::make_item("0;109");
+constexpr __detail::Item ALT_F7                     = __detail::make_item("0;110");
+constexpr __detail::Item ALT_F8                     = __detail::make_item("0;111");
+constexpr __detail::Item ALT_F9                     = __detail::make_item("0;112");
+constexpr __detail::Item ALT_F10                    = __detail::make_item("0;113");
+constexpr __detail::Item ALT_F11                    = __detail::make_item("0;139");
+constexpr __detail::Item ALT_F12                    = __detail::make_item("0;140");
+constexpr __detail::Item ALT_HOME                   = __detail::make_item("224;151");
+constexpr __detail::Item ALT_UP                     = __detail::make_item("224;152");
+constexpr __detail::Item ALT_PAGE_UP                = __detail::make_item("224;153");
+constexpr __detail::Item ALT_LEFT                   = __detail::make_item("224;155");
+constexpr __detail::Item ALT_RIGHT                  = __detail::make_item("224;157");
+constexpr __detail::Item ALT_END                    = __detail::make_item("224;159");
+constexpr __detail::Item ALT_DOWN                   = __detail::make_item("224;154");
+constexpr __detail::Item ALT_PAGE_DOWN              = __detail::make_item("224;161");
+constexpr __detail::Item ALT_INSERT                 = __detail::make_item("224;162");
+constexpr __detail::Item ALT_KDELETE                = __detail::make_item("224;163");
+constexpr __detail::Item ALT_BACKSPACE              = __detail::make_item("0");
+constexpr __detail::Item ALT_ENTER                  = __detail::make_item("0");
+constexpr __detail::Item ALT_TAB                    = __detail::make_item("0;165");
+constexpr __detail::Item ALT_A                      = __detail::make_item("0;30");
+constexpr __detail::Item ALT_B                      = __detail::make_item("0;48");
+constexpr __detail::Item ALT_C                      = __detail::make_item("0;46");
+constexpr __detail::Item ALT_D                      = __detail::make_item("0;32");
+constexpr __detail::Item ALT_E                      = __detail::make_item("0;18");
+constexpr __detail::Item ALT_F                      = __detail::make_item("0;33");
+constexpr __detail::Item ALT_G                      = __detail::make_item("0;34");
+constexpr __detail::Item ALT_H                      = __detail::make_item("0;35");
+constexpr __detail::Item ALT_I                      = __detail::make_item("0;23");
+constexpr __detail::Item ALT_J                      = __detail::make_item("0;36");
+constexpr __detail::Item ALT_K                      = __detail::make_item("0;37");
+constexpr __detail::Item ALT_L                      = __detail::make_item("0;38");
+constexpr __detail::Item ALT_M                      = __detail::make_item("0;50");
+constexpr __detail::Item ALT_N                      = __detail::make_item("0;49");
+constexpr __detail::Item ALT_O                      = __detail::make_item("0;24");
+constexpr __detail::Item ALT_P                      = __detail::make_item("0;25");
+constexpr __detail::Item ALT_Q                      = __detail::make_item("0;16");
+constexpr __detail::Item ALT_R                      = __detail::make_item("0;19");
+constexpr __detail::Item ALT_S                      = __detail::make_item("0;31");
+constexpr __detail::Item ALT_T                      = __detail::make_item("0;20");
+constexpr __detail::Item ALT_U                      = __detail::make_item("0;22");
+constexpr __detail::Item ALT_V                      = __detail::make_item("0;47");
+constexpr __detail::Item ALT_W                      = __detail::make_item("0;17");
+constexpr __detail::Item ALT_X                      = __detail::make_item("0;45");
+constexpr __detail::Item ALT_Y                      = __detail::make_item("0;21");
+constexpr __detail::Item ALT_Z                      = __detail::make_item("0;44");
+constexpr __detail::Item ALT_K0                     = __detail::make_item("0;129");
+constexpr __detail::Item ALT_K1                     = __detail::make_item("0;120");
+constexpr __detail::Item ALT_K2                     = __detail::make_item("0;121");
+constexpr __detail::Item ALT_K3                     = __detail::make_item("0;122");
+constexpr __detail::Item ALT_K4                     = __detail::make_item("0;123");
+constexpr __detail::Item ALT_K5                     = __detail::make_item("0;124");
+constexpr __detail::Item ALT_K6                     = __detail::make_item("0;125");
+constexpr __detail::Item ALT_K7                     = __detail::make_item("0;126");
+constexpr __detail::Item ALT_K8                     = __detail::make_item("0;126");
+constexpr __detail::Item ALT_K9                     = __detail::make_item("0;127");
+constexpr __detail::Item ALT_HYPHEN                 = __detail::make_item("0;130");
+constexpr __detail::Item ALT_EQUALS                 = __detail::make_item("0;131");
+constexpr __detail::Item ALT_LEFT_SQUARE_BRACKET    = __detail::make_item("0;26");
+constexpr __detail::Item ALT_RIGHT_SQUARE_BRACKET   = __detail::make_item("0;27");
+constexpr __detail::Item ALT_BACKSLASH              = __detail::make_item("0;43");
+constexpr __detail::Item ALT_SEMICOLON              = __detail::make_item("0;39");
+constexpr __detail::Item ALT_APOSTROPHE             = __detail::make_item("0;40");
+constexpr __detail::Item ALT_COMMA                  = __detail::make_item("0;51");
+constexpr __detail::Item ALT_PERIOD                 = __detail::make_item("0;52");
+constexpr __detail::Item ALT_SLASH                  = __detail::make_item("0;53");
+constexpr __detail::Item ALT_BACKTICK               = __detail::make_item("0;41");
+constexpr __detail::Item ALT_ENTER_NUMPAD           = __detail::make_item("0;166");
+constexpr __detail::Item ALT_PLUS_NUMPAD            = __detail::make_item("0;55");
+constexpr __detail::Item ALT_HYPHEN_NUMPAD          = __detail::make_item("0;164");
+constexpr __detail::Item ALT_SLASH_NUMPAD           = __detail::make_item("0;74");
+
+} // namespace KBD
+
+inline std::string_view MAP_KEY(KBD::__detail::Item key, const std::string& str) {
+    return "\033[" + std::string(key.value()) + ";" + "\"" + str + "\"" + "p";
+}
+
+inline std::string_view MAP_KEY(KBD::__detail::Item key, int keycode) {
+    return "\033[" + std::string(key.value()) + ";" + "\"" + std::to_string(keycode) + "\"" + "p";
+}
+
+} // namespace ANSI
+
 class Args;
 
 /**
  * Internal objects not intended for public use.
  */
 namespace detail {
+
+// ANSI helpers
+inline std::string u8(unsigned v) {
+    return std::to_string(v > 255 ? 255 : v);
+}
+
+inline std::string rgbConstruct(unsigned r, unsigned g, unsigned b) {
+    std::string s;
+    s.reserve(12); // 255;255;255
+    s += u8(r);
+    s += ';';
+    s += u8(g);
+    s += ';';
+    s += u8(b);
+    return s;
+}
 
 template <typename T>
 struct function_traits;
@@ -1643,6 +2237,274 @@ private:
 
         return lines;
     }
+};
+
+/**
+ * @todo
+ * - Live validation (per keystroke)
+ * - Autocomplete
+ */
+class Prompt {
+public:
+    struct Theme {
+        std::string prefix = "> ";
+        std::string input_color = "";
+        std::string reset_color = "\033[0m";
+    };
+
+    struct Options {
+        bool inline_mode = false;
+        bool show_default = true;
+    };
+
+    virtual ~Prompt() = default;
+
+    Prompt& setLabel(const std::string& label) {
+        label_ = label;
+        return *this;
+    }
+
+    Prompt& setTheme(const Theme& theme) {
+        theme_ = theme;
+        return *this;
+    }
+
+    Prompt& setOptions(const Options& opts) {
+        options_ = opts;
+        return *this;
+    }
+
+    Prompt& setDefault(const std::string& value) {
+        default_ = value;
+        return *this;
+    }
+
+    Prompt& setValidator(std::function<bool(const std::string&)> fn, std::string error = "Invalid input") {
+        validator_ = fn;
+        error_message_ = error;
+        return *this;
+    }
+
+    virtual std::string get() {
+        while (true) {
+            render();
+
+            std::string input = readInput();
+
+            if (input.empty() && default_) {
+                input = *default_;
+            }
+
+            if (validator_ && !validator_(input)) {
+                std::cout << error_message_ << "\n";
+                continue;
+            }
+
+            return input;
+        }
+    }
+
+protected:
+    std::string label_;
+    Theme theme_;
+    Options options_;
+
+    std::optional<std::string> default_;
+
+    std::function<bool(const std::string&)> validator_;
+    std::string error_message_ = "Invalid input";
+
+    std::function<std::string(const Prompt&)> formatter_;
+
+    virtual std::string readInput() = 0;
+
+    void render() const {
+        if (formatter_) {
+            std::cout << formatter_(*this);
+            return;
+        }
+
+        if (!label_.empty()) {
+            if (options_.inline_mode) {
+                std::cout << label_ << " ";
+            } else {
+                std::cout << label_ << "\n";
+            }
+        }
+
+        if (!options_.inline_mode) {
+            std::cout << theme_.prefix;
+        }
+
+        if (default_ && options_.show_default) {
+            std::cout << "(" << *default_ << ") ";
+        }
+    }
+};
+
+class PromptText : public Prompt {
+protected:
+    std::string readInput() override {
+        std::string input;
+        std::getline(std::cin, input);
+        return input;
+    }
+};
+
+class PromptPassword : public Prompt {
+public:
+    struct MaskOptions {
+        char mask_char = '*';
+        bool show_mask = true;
+    };
+
+    PromptPassword& setOptions(const MaskOptions& opts) {
+        options_ = opts;
+        return *this;
+    }
+
+protected:
+    std::string readInput() override {
+        std::string password;
+
+#ifdef _WIN32
+        char ch;
+        while ((ch = _getch()) != '\r') {
+            if (ch == '\b') {
+                if (!password.empty()) {
+                    password.pop_back();
+                    if (options_.show_mask) {
+                        std::cout << "\b \b";
+                    }
+                }
+            } else {
+                password += ch;
+                if (options_.show_mask) {
+                    std::cout << options_.mask_char;
+                }
+            }
+        }
+#else
+        temios oldt, newt;
+        tcgetattr(STDIN_FILENO, &oldt);
+        newt = oldt;
+        newt.c_lflag &= ~ECHO;
+        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
+        std::getline(std::cin, passwod);
+
+        tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+
+        if (options_.show_mask) {
+            std::cout << std::string(password.size(), options_.mask_char);
+        }
+#endif
+
+        std::cout << "\n";
+        return password;
+    }
+
+private:
+    MaskOptions options_;
+};
+
+class PromptSelect : public Prompt {
+public:
+    PromptSelect() {
+#ifdef _WIN32
+        hConsole_ = GetStdHandle(STD_OUTPUT_HANDLE);
+#endif
+    }
+
+    PromptSelect& setOptions(const std::vector<std::string>& options) {
+        options_.resize(options.size());
+        options_ = options;
+        return *this;
+    }
+
+    PromptSelect& setLabel(const std::string& label) {
+        label_ = label;
+        return *this;
+    }
+
+    std::string readInput() override {
+#ifdef _WIN32
+        if (options_.empty()) return "";
+
+        int selected = 0;
+        COORD startPos = getCursorPosition();
+
+        auto render = [&]() {
+            goToXY(0, startPos.Y);
+            std::cout << ANSI::ERASE_LINE << label_ << "\n";
+
+            for (size_t i = 0; i < options_.size(); ++i) {
+                std::cout << ANSI::ERASE_LINE;
+                const std::string prefix = (selected == i) ? theme_.input_color + theme_.prefix + theme_.reset_color : "  ";
+                std::cout << prefix << options_[i] << "\n";
+            }
+            std::cout.flush();
+        };
+
+        render();
+
+        while (true) {
+            int key = _getch();
+
+            if (key == 0 || key == 0xE0) {
+                key = _getch();
+                if (key == 72) {
+                    selected = (selected - 1 + options_.size()) % options_.size();
+                    render();
+                } else if (key == 80) {
+                    selected = (selected + 1) % options_.size();
+                    render();
+                }
+            } else if (key == ' ' || key == '\n' || key == '\r') {
+                break;
+            } else if (key == 3) {
+                exit(0);
+            }
+        }
+
+        goToXY(0, startPos.Y);
+
+        size_t totalLines = options_.size() + 1;
+        for (size_t i = 0; i < totalLines; ++i) {
+            goToXY(0, startPos.Y + i);
+            std::cout << ANSI::ERASE_LINE;
+        }
+
+        goToXY(0, startPos.Y);
+
+        return options_[selected];
+#else
+        return "";
+#endif
+    }
+
+private:
+    std::vector<std::string> options_;
+    std::string label_;
+
+#ifdef _WIN32
+    HANDLE hConsole_;
+
+    COORD getCursorPosition() {
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(hConsole_, &csbi)) {
+            return csbi.dwCursorPosition;
+        }
+        return {0,0};
+    }
+
+    void goToXY(int x, int y) {
+        COORD coord;
+        coord.X = x;
+        coord.Y = y;
+        SetConsoleCursorPosition(hConsole_, coord);
+    }
+#endif
 };
 
 } // namespace ui
