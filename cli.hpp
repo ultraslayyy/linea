@@ -142,6 +142,7 @@
 #include <type_traits>
 #include <typeinfo>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #ifdef _WIN32
@@ -152,7 +153,7 @@
 #include <unistd.h>
 #endif
 
-/*
+/**
 #if defined (_MSVC_LANG)
 #define LINEA_CPLUSPLUS _MSVC_LANG
 #else
@@ -249,6 +250,35 @@ namespace linea {
 
 namespace ANSI {
 
+namespace __detail {
+
+inline std::string u8(unsigned v) {
+    return std::to_string(v > 255 ? 255 : v);
+}
+
+inline std::string rgbConstruct(unsigned r, unsigned g, unsigned b) {
+    std::string s;
+    s.reserve(12); // 255;255;255
+    s += u8(r);
+    s += ';';
+    s += u8(g);
+    s += ';';
+    s += u8(b);
+    return s;
+}
+
+inline std::string oscTerminator(bool st) {
+    return st ? "\033\\" : "\a";
+}
+
+inline std::string oscCommand(const std::string& body, bool st = false) {
+    return "\033]" + body + oscTerminator(st);
+}
+
+}
+
+// C Escaped C0 control codes (ASCII control codes, originally ANSI X3.4, so it counts)
+inline constexpr char NUL = '\0';
 inline constexpr char BEL = '\a';
 inline constexpr char BS  = '\b';
 inline constexpr char HT  = '\t';
@@ -256,11 +286,34 @@ inline constexpr char LF  = '\n';
 inline constexpr char BT  = '\v';
 inline constexpr char FF  = '\f';
 inline constexpr char CR  = '\r';
-inline constexpr char ESC = '\033';
+inline constexpr char ESC = '\033'; // Also \e (GCC only), \033 is octal, \x1b is hexadecimal (\033 is more reliable and supported)
+inline constexpr char SP = ' '; // Yes, 'Space'. Not official C0 control character, but close to
+
+inline constexpr char CRLF[] = "\r\n";
+
+inline constexpr char SS2[]  = "\033N";  // Single Shift Two
+inline constexpr char LS2[]  = "\033n";  // Lock Shift Two
+inline constexpr char SS3[]  = "\033O";  // Single Shift Three
+inline constexpr char LS3[]  = "\033o";  // Lock Shift Three
+inline constexpr char DCS[]  = "\033P";  // Device Control String
+inline constexpr char CSI[]  = "\033[";  // Control Sequence Introducer
+inline constexpr char ST[]   = "\033\\"; // String Terminator
+inline constexpr char OSC[]  = "\033]";  // Operating System Command
+inline constexpr char SOS[]  = "\033X";  // Start of String
+inline constexpr char PM[]   = "\033^";  // Privacy Message
+inline constexpr char APC[]  = "\033_";  // Application Program Command
+inline constexpr char LS1R[] = "\033~";
+
+inline constexpr char COLUMNS_INSERT[]   = "\033['}";
+inline constexpr char COLUMNS_DELETE[]   = "\033['~";
+
+inline constexpr char REPEAT_LAST_CHAR[] = "\033[b";
 
 inline constexpr char CURSOR_MOVE_HOME[]       = "\033[H";
 
-inline std::string CURSOR_MOVE(int l, int c)           { return "\033[" + std::to_string(l) + ";" + std::to_string(c) + "H"; /*Can also use 'f' instead of 'H'*/ }
+inline std::string HORIZONTAL_VERTICAL_POSITION(int l, int c) { return "\033[" + std::to_string(l) + ";" + std::to_string(c) + "f"; }
+
+inline std::string CURSOR_MOVE(int l, int c)           { return "\033[" + std::to_string(l) + ";" + std::to_string(c) + "H"; }
 inline std::string CUSOR_MOVE_ROW(int v)               { return "\033[" + std::to_string(v) + "d"; }
 inline std::string CURSOR_MOVE_UP(int v)               { return "\033[" + std::to_string(v) + "A"; }
 inline std::string CURSOR_MOVE_DOWN(int v)             { return "\033[" + std::to_string(v) + "B"; }
@@ -283,13 +336,16 @@ inline constexpr char TAB_STOP_CLEAR_COL[]     = "\033[g";
 inline constexpr char TAB_STOP_CLEAR_ALL[]     = "\033[3g";
 inline constexpr char TAB_STOP_MOVE_TO_NEXT[]  = "\t";
 
-inline constexpr char DEVICE_STATUS_REPORT[]        = "\033[5n";
+inline constexpr char DEVICE_STATUS_REPORT[]        = "\033[6n";
 inline constexpr char DEVICE_PRIMARY_ATTRIBUTES[]   = "\033[c";
 inline constexpr char DEVICE_SECONDARY_ATTRIBUTES[] = "\033[>c";
 
 inline constexpr char TERMINAL_REQUEST_ID[]         = "\033[0c";
 inline constexpr char TERMINAL_RESET_SOFT[]         = "\033[!p";
 inline constexpr char TERMINAL_RESET_FULL[]         = "\033c";
+
+inline constexpr char AUX_PORT_ON[]                 = "\033[5i";
+inline constexpr char AUX_PORT_OFF[]                = "\033[4i";
 
 inline constexpr char ERASE_IN_DISPLAY[]            = "\033[J";
 inline constexpr char ERASE_FROM_CURSOR_TO_SCREEN[] = "\033[0J";
@@ -300,7 +356,7 @@ inline constexpr char ERASE_FROM_CURSOR_TO_LINE[]   = "\033[K";
 inline constexpr char ERASE_TO_CURSOR_FROM_LINE[]   = "\033[1K";
 inline constexpr char ERASE_LINE[]                  = "\033[2K";
 
-inline constexpr char CLEAR_SCREEN_AND_HOME[]       = "\033[2J\033[H";
+inline constexpr char CLEAR_SCREEN_AND_HOME[]       = "\033[2J\033[H"; // Common helper to do both
 
 inline constexpr char SCROLL_UP_ONE[]                        = "\033[S";
 inline constexpr char SCROLL_DOWN_ONE[]                      = "\033[T";
@@ -314,7 +370,7 @@ inline std::string    DELETE_CHARS(int n)             { return "\033[" + std::to
 inline std::string    INSERT_LINES(int n)             { return "\033[" + std::to_string(n) + "L"; }
 inline std::string    DELETE_LINES(int n)             { return "\033[" + std::to_string(n) + "M"; }
 
-inline constexpr char RESET[]        = "\033[0m";
+inline constexpr char RESET[]        = "\033[0m"; // 'CSI m' also works, not just 'CSI 0 m'
 inline constexpr char BOLD[]         = "\033[1m";
 inline constexpr char DIM[]          = "\033[2m";
 inline constexpr char ITALIC[]       = "\033[3m";
@@ -324,6 +380,13 @@ inline constexpr char REVERSE[]      = "\033[7m";
 inline constexpr char INVISIBLE[]    = "\033[8m";
 inline constexpr char STRIKETHOUGH[] = "\033[9m";
 
+inline constexpr char FONT_PRIMARY[] = "\033[10m";
+// Limited support
+inline constexpr char FONT_FRAKTUR[] = "\033[20m";
+
+// Disables BOLD on some terminals
+inline constexpr char DOUBLE_UNDERLINE[]   = "\033[21m";
+
 inline constexpr char BOLD_RESET[]         = "\033[22m";
 inline constexpr char DIM_RESET[]          = "\033[22m";
 inline constexpr char ITALIC_RESET[]       = "\033[23m";
@@ -332,6 +395,9 @@ inline constexpr char BLINKING_RESET[]     = "\033[25m";
 inline constexpr char REVERSE_RESET[]      = "\033[27m";
 inline constexpr char INVISIBLE_RESET[]    = "\033[28m";
 inline constexpr char STRIKETHOUGH_RESET[] = "\033[29m";
+
+// ITU T.61 and T.416, not known to be used on terminals
+inline constexpr char PROPORTIONAL_SPACING[] = "\033[26m";
 
 inline constexpr char FG_BLACK[]   = "\033[30m";
 inline constexpr char FG_RED[]     = "\033[31m";
@@ -343,8 +409,8 @@ inline constexpr char FG_CYAN[]    = "\033[36m";
 inline constexpr char FG_WHITE[]   = "\033[37m";
 inline constexpr char FG_DEFAULT[] = "\033[39m";
 
-inline std::string FG_CUSTOM_256(unsigned v)                         { return "\033[38;5;" + detail::u8(v) + "m"; }
-inline std::string FG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[38;2;" + detail::rgbConstruct(r,g,b) + "m"; }
+inline std::string FG_CUSTOM_256(unsigned v)                         { return "\033[38;5;" + __detail::u8(v) + "m"; }
+inline std::string FG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[38;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
 
 inline constexpr char BG_BLACK[]   = "\033[40m";
 inline constexpr char BG_RED[]     = "\033[41m";
@@ -356,9 +422,39 @@ inline constexpr char BG_CYAN[]    = "\033[46m";
 inline constexpr char BG_WHITE[]   = "\033[47m";
 inline constexpr char BG_DEFAULT[] = "\033[49m";
 
-inline std::string BG_CUSTOM_256(unsigned v)                         { return "\033[48;5;" + detail::u8(v) + "m"; }
-inline std::string BG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[48;2;" + detail::rgbConstruct(r,g,b) + "m"; }
+inline std::string BG_CUSTOM_256(unsigned v)                         { return "\033[48;5;" + __detail::u8(v) + "m"; }
+inline std::string BG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[48;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
 
+inline constexpr char FRAMED[]               = "\033[51m";
+inline constexpr char ENCIRCLED[]            = "\033[52m";
+inline constexpr char OVERLINE[]             = "\033[53m";
+inline constexpr char FRAMED_ENCIRCLED_OFF[] = "\033[54m";
+inline constexpr char OVERLINE_OFF[]         = "\033[55m";
+
+// Not in standard; implemented in Kitty, VTE, mintty, and iTerm2
+inline std::string UNDERLINE_COLOR_256(unsigned v)                         { return "\033[58;5;" + __detail::u8(v) + "m"; }
+inline std::string UNDERLINE_COLOR_RGB(unsigned r, unsigned g, unsigned b) { return "\033[58;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
+
+inline constexpr char UNDERLINE_COLOR_DEFAULT[] = "\033[59m";
+
+// Rarely supported.
+// Underline doubles as 'or right side line', overline being left side
+// Double of these are double side lines
+inline constexpr char IDEOGRAM_UNDERLINE[]        = "\033[60m";
+inline constexpr char IDEOGRAM_DOUBLE_UNDERLINE[] = "\033[61m";
+inline constexpr char IDEOGRAM_OVERLINE[]         = "\033[62m";
+inline constexpr char IDEOGRAM_DOUBLE_OVERLINE[]  = "\033[63m";
+inline constexpr char IDEOGRAM_STRESS_MARKING[]   = "\033[64m";
+inline constexpr char IDEOGRAM_RESET[]            = "\033[65m";
+
+// Only in mintty
+inline constexpr char SUPERSCRIPT[]       = "\033[73m";
+inline constexpr char SUBSCRIPT[]         = "\033[74m";
+inline constexpr char SUPERSCRIPT_RESET[] = "\033[75m"; // Included twice for ergo
+inline constexpr char SUBSCRIPT_RESET[]   = "\033[75m";
+
+// Technically these and bright_ variants are not in standard,
+// but often supported (originally by aixterm).
 inline constexpr char FG_BLACK_BRIGHT[]   = "\033[90m";
 inline constexpr char FG_RED_BRIGHT[]     = "\033[91m";
 inline constexpr char FG_GREEN_BRIGHT[]   = "\033[92m";
@@ -410,58 +506,143 @@ inline constexpr char MODE_640X480_2MONO_RESET[]    = "\033[=17l";
 inline constexpr char MODE_640X480_16COLOR_RESET[]  = "\033[=18l";
 inline constexpr char MODE_320X200_256COLOR_RESET[] = "\033[=19l";
 
+inline constexpr char CURSOR_STYLE_SET[]                = "\033[ q";
+inline constexpr char CURSOR_STYLE_BLINKING_BLOCK[]     = "\033[1 q";
+inline constexpr char CURSOR_STYLE_STEADY_BLOCK[]       = "\033[2 q";
+inline constexpr char CURSOR_STYLE_BLINKING_UNDERLINE[] = "\033[3 q";
+inline constexpr char CURSOR_STYLE_STEADY_UNDERLINE[]   = "\033[4 q";
+inline constexpr char CURSOR_STYLE_BLINKING_BAR[]       = "\033[5 q";
+inline constexpr char CURSOR_STYLE_STEADY_BAR[]         = "\033[6 q";
+
+/**
+ * @brief
+ * Line drawing. e.g.,
+ * ```
+ * lqk
+ * x x
+ * mqj
+ * ```
+ * Becomes a box with 'ESC ( 0' active
+ */
 inline constexpr char CHAR_SET_LINE_DRAWING[] = "\033(0";
 inline constexpr char CHAR_SET_ASCII[]        = "\033(B";
 
 // "While these modes may be supported by the most terminals, some may not work in multiplexers like tmux."
 // PMODE = Private Mode
-inline constexpr char PMODE_CURSOR_KEYS_APPLICATION[]  = "\033[?1h";
-inline constexpr char PMODE_CURSOR_KEYS_NORMAL[]       = "\033[?1l";
-inline constexpr char PMODE_WRAP_ENABLE[]              = "\033[?7h";
-inline constexpr char PMODE_WRAP_DISABLE[]             = "\033[?7l";
-inline constexpr char PMODE_CURSOR_STEADY[]            = "\033[?12l";
-inline constexpr char PMODE_CURSOR_BLINKING[]          = "\033[?12h";
-inline constexpr char PMODE_CURSOR_INVISIBLE[]         = "\033[?25l";
-inline constexpr char PMODE_CURSOR_VISIBLE[]           = "\033[?25h";
-inline constexpr char PMODE_RESTORE_SCREEN[]           = "\033[?47l";
-inline constexpr char PMODE_SAVE_SCREEN[]              = "\033[?47h";
-inline constexpr char PMODE_MOUSE_ENABLE_BASIC[]       = "\033[?1000h";
-inline constexpr char PMODE_MOUSE_DISABLE[]            = "\033[?1000l";
-inline constexpr char PMODE_MOUSE_ENABLE_BUTTON_DRAG[] = "\033[?1003h";
-inline constexpr char PMODE_SGR_EXTENDED_MODE[]        = "\033[?1006h";
-inline constexpr char PMODE_ENABLE_ALT_BUFFER[]        = "\033[?1049h";
-inline constexpr char PMODE_DISABLE_ALT_BUFFER[]       = "\033[?1049l";
-inline constexpr char PMODE_BRACKETED_PASTE_ON[]       = "\033[?2004h";
-inline constexpr char PMODE_BRACKETED_PASTE_OFF[]      = "\033[?200hl";
+inline constexpr char PMODE_CURSOR_KEYS_APPLICATION[]      = "\033[?1h";
+inline constexpr char PMODE_CURSOR_KEYS_NORMAL[]           = "\033[?1l";
+inline constexpr char PMODE_WRAP_ENABLE[]                  = "\033[?7h";
+inline constexpr char PMODE_WRAP_DISABLE[]                 = "\033[?7l";
+inline constexpr char PMODE_CURSOR_BLINKING[]              = "\033[?12h";
+inline constexpr char PMODE_CURSOR_STEADY[]                = "\033[?12l";
+inline constexpr char PMODE_CURSOR_VISIBLE[]               = "\033[?25h";
+inline constexpr char PMODE_CURSOR_INVISIBLE[]             = "\033[?25l";
+inline constexpr char PMODE_SAVE_SCREEN[]                  = "\033[?47h";
+inline constexpr char PMODE_RESTORE_SCREEN[]               = "\033[?47l";
+inline constexpr char PMODE_MOUSE_ENABLE_BASIC[]           = "\033[?1000h";
+inline constexpr char PMODE_MOUSE_DISABLE[]                = "\033[?1000l";
+inline constexpr char PMODE_MOUSE_ENABLE_BUTTON_EVENT[]    = "\033[?1002h";
+inline constexpr char PMODE_MOUSE_DISABLE_BUTTON_EVENT[]   = "\033[?1002l";
+inline constexpr char PMODE_MOUSE_ENABLE_BUTTON_DRAG[]     = "\033[?1003h";
+inline constexpr char PMODE_MOUSE_DISABLE_BUTTON_DRAG[]    = "\033[?1003l";
+inline constexpr char PMODE_ENABLE_REPORTING_FOCUS[]       = "\033[?1004h";
+inline constexpr char PMODE_DISABLE_REPORTING_FOCUS[]      = "\033[?1004l";
+inline constexpr char PMODE_MOUSE_MODE_UTF8[]              = "\033[?1005h";
+inline constexpr char PMODE_SGR_EXTENDED_MODE[]            = "\033[?1006h";
+inline constexpr char PMODE_MOUSE_ENABLE_URXVT_EXTENDED[]  = "\033[?1015h";
+inline constexpr char PMODE_MOUSE_DISABLE_URXVT_EXTENDED[] = "\033[?1015l";
+inline constexpr char PMODE_ENABLE_ALT_BUFFER_VAR[]        = "\033[?1047h";
+inline constexpr char PMODE_SAVE_CURSOR[]                  = "\033[?1048h";
+inline constexpr char PMODE_RESTORE_CURSOR[]               = "\033[?1048l";
+inline constexpr char PMODE_ENABLE_ALT_BUFFER[]            = "\033[?1049h";
+inline constexpr char PMODE_DISABLE_ALT_BUFFER[]           = "\033[?1049l";
+inline constexpr char PMODE_BRACKETED_PASTE_ON[]           = "\033[?2004h";
+inline constexpr char PMODE_BRACKETED_PASTE_OFF[]          = "\033[?2004l"; // Disables ESC [200~ and ESC [201~ surrounding paste
 
-// SGR extensions
-/**
- * Messy. Many terminals see it as "bold off", some ignore it,
- * and it overlaps with 22 alot. NON-PORTABLE
- */
-inline constexpr char SGR_DOUBLE_UNDERLINE[]     = "\033[21m";
-inline constexpr char SGR_FRAMED[]               = "\033[51m";
-inline constexpr char SGR_ENCIRCLED[]            = "\033[52m";
-inline constexpr char SGR_OVERLINE[]             = "\033[53m";
-inline constexpr char SGR_FRAMED_ENCIRCLED_OFF[] = "\033[54m";
-inline constexpr char SGR_OVERLINE_OFF[]         = "\033[55m";
+// 0Ft Sequences (ESC followed by SP (0x22, space))
+// Not common in the slightest, basically dead
+inline constexpr char ANNOUNCE_CODE_STRUCTURE_6[]      = "\033 F";
+inline constexpr char SEND_7BIT_C1_CONTROL_CHARACTER[] = "\033 F";
+inline constexpr char ANNOUNCE_CODE_STRUCTURE_7[]      = "\033 G";
+inline constexpr char SEND_8BIT_C1_CONTROL_CHARACTER[] = "\033 G";
 
-inline std::string HYPERLINK(const std::string& url, const std::string& text, bool st = false) {
-    const std::string t = st ? "\033\\" : "\a";
-    return "\033]8;;" + url + t + text + "\033]8;;" + t;
-}
-inline std::string SET_TITLE(const std::string& title) { return "\033]0;" + title + "\007"; }
-inline std::string SET_PALETTE_COLOR(int i, unsigned r, unsigned g, unsigned b, bool st = false) {
-    const std::string t = st ? "\033\\" : "\a";
-    using namespace linea::detail;
-    return "\033]4;" + std::to_string(i) + ";rgb:" + u8(r) + "/" + u8(g) + "/" + u8(b) + t;
-}
-inline std::string SET_CLIPBOARD_OSC_52(const std::string& base64, bool st = false) {
-    const std::string t = st ? "\033\\" : "\a";
-    return "\033]52;c;" + base64 + t;
-}
+// 3Fp (private-use) sequences (common but not guaranteed)
+inline constexpr char DOUBLE_HEIGHT_TOP[]     = "\033#3";
+inline constexpr char DOUBLE_HEIGHT_BOTTOM[]  = "\033#4";
+inline constexpr char SINGLE_WIDTH[]          = "\033#5";
+inline constexpr char DOUBLE_WIDTH[]          = "\033#6";
+inline constexpr char SCREEN_ALIGNMENT_TEST[] = "\033#8";
 
-inline constexpr char RESET_PALETTE[] = "\033]104\033\\";
+// OSC
+inline std::string OSC_SET_TITLE(const std::string& title) {
+    return "\033]0;" + title + "\007";
+}
+inline std::string OSC_SET_PALETTE_COLOR(int i, unsigned r, unsigned g, unsigned b, bool st = false) {
+    return __detail::oscCommand("4;" + std::to_string(i) + ";rgb:" + __detail::u8(r) + "/" + __detail::u8(g) + "/" + __detail::u8(b), st);
+}
+inline std::string OSC_SET_WORKING_DIRECTORY(const std::string& host, const std::string& path, bool st = false) {
+    return __detail::oscCommand("7;file://" + host + path, st);
+}
+inline std::string OSC_HYPERLINK(const std::string& url, const std::string& text, const std::string& id = "", bool st = false) {
+    std::string params;
+    if (!id.empty()) params = "id=" + id;
+    
+    return __detail::oscCommand("8;" + params + ";" + url + __detail::oscTerminator(st) + text + "\033]8;;", st);
+}
+inline std::string OSC_NOTIFY(const std::string& message, bool st = false) {
+    return __detail::oscCommand("9;" + message, st);
+}
+inline std::string OSC_SET_DEFAULT_FG_RGB(unsigned r, unsigned g, unsigned b, bool st = false) {
+    return __detail::oscCommand("10;rgb:" + __detail::u8(r) + "/" + __detail::u8(g) + "/" + __detail::u8(b), st);
+}
+inline std::string OSC_QUERY_DEFAULT_FG(bool st = false) {
+    return __detail::oscCommand("10;?", st);
+}
+inline std::string OSC_SET_DEFAULT_BG_RGB(unsigned r, unsigned g, unsigned b, bool st = false) {
+    return __detail::oscCommand("11;rgb:" + __detail::u8(r) + "/" + __detail::u8(g) + "/" + __detail::u8(b), st);
+}
+inline std::string OSC_QUERY_DEFAULT_BG(bool st = false) {
+    return __detail::oscCommand("11;?", st);
+}
+inline std::string OSC_SET_CURSOR_COLOR_RGB(unsigned r, unsigned g, unsigned b, bool st = false) {
+    return __detail::oscCommand("12;rgb:" + __detail::u8(r) + "/" + __detail::u8(g) + "/" + __detail::u8(b), st);
+}
+inline std::string OSC_QUERY_CURSOR_COLOR(bool st = false) {
+    return __detail::oscCommand("12;?", st);
+}
+// Target = 'c' (clipboard), 'p'(primary, X11) or 's' (selection)
+inline std::string OSC_SET_CLIPBOARD(const std::string& base64, char target = 'c', bool st = false) {
+    return __detail::oscCommand("52;" + std::string(1, target) + ";" + base64, st);
+}
+inline constexpr char OSC_RESET_PALETTE[]      = "\033]104\033\\";
+inline constexpr char OSC_RESET_DEFAULT_FG[]   = "\033]110\033\\";
+inline constexpr char OSC_RESET_DEFAULT_BG[]   = "\033]111\033\\";
+inline constexpr char OSC_RESET_CURSOR_COLOR[] = "\033]112\033\\";
+inline constexpr char OSC_PROMPT_START[]       = "\033]133;A\007";
+inline constexpr char OSC_PROMPT_END[]         = "\033]133;B\007";
+inline constexpr char OSC_COMMAND_START[]      = "\033]133;C\007";
+inline constexpr char OSC_COMMAND_END[]        = "\033]133;D\007";
+inline std::string OSC_COMMAND_START_WITH_META(const std::string& meta, bool st = false) {
+    return __detail::oscCommand("133;C;" + meta, st);
+}
+inline std::string OSC_COMMAND_DONE(int exitCode, bool st = false) {
+    return __detail::oscCommand("133;D;" + std::to_string(exitCode), st);
+}
+inline std::string OSC_URXVT_NOTIFY(const std::string& message, bool st = false) {
+    return __detail::oscCommand("777;notify;" + message, st);
+}
+inline std::string OSC_ITERM_SET_CWD(const std::string& path, bool st = false) {
+    return __detail::oscCommand("1337;CurrentDir=" + path, st);
+}
+inline std::string OSC_ITERM_IMAGE(const std::string& base64, int width = 0, int height = 0, bool st = false) {
+    std::string params = "inline=1";
+    if (width > 0)  params += ";width="  + std::to_string(width);
+    if (height > 0) params += ";height=" + std::to_string(height);
+    return __detail::oscCommand("1337;File=" + params + ":" + base64, st);
+}
+inline std::string OSC_ITERM_SET_VAR(const std::string& name, const std::string& base64, bool st = false) {
+    return __detail::oscCommand("1337;SetUserVar=" + name + "=" + base64, st);
+}
 
 // xterm extensions
 inline constexpr char XTERM_WINDOW_GET_SIZE_PX[]    = "\033[14t";
@@ -482,10 +663,10 @@ private:
     std::string_view value_;
     constexpr Item(std::string_view v) : value_(v) {}
 
-    friend constexpr Item make_item(std::string_view);
+    friend constexpr Item make_item(std::string_view v);
 };
 
-static inline constexpr Item make_item(std::string_view v) {
+inline constexpr Item make_item(std::string_view v) {
     return Item(v);
 }
 
@@ -823,38 +1004,45 @@ constexpr __detail::Item ALT_SLASH_NUMPAD           = __detail::make_item("0;74"
 
 } // namespace KBD
 
+// Almost no modern terminals support this.
 inline std::string_view MAP_KEY(KBD::__detail::Item key, const std::string& str) {
     return "\033[" + std::string(key.value()) + ";" + "\"" + str + "\"" + "p";
 }
 
+// Almost no modern terminals support this.
 inline std::string_view MAP_KEY(KBD::__detail::Item key, int keycode) {
-    return "\033[" + std::string(key.value()) + ";" + "\"" + std::to_string(keycode) + "\"" + "p";
+    return "\033[" + std::string(key.value()) + ";" + std::to_string(keycode) + "p";
+}
+
+// Almost no modern terminals support this.
+inline std::string_view MAP_KEY(KBD::__detail::Item key, const std::vector<std::variant<int, std::string>>& strs) {
+    std::string str;
+    for (const auto s : strs) {
+        str += ';';
+
+        if (std::holds_alternative<int>(s)) {
+            str += std::to_string(std::get<int>(s));
+        } else {
+            str += '"';
+            str += std::get<std::string>(s);
+            str += '"';
+        }
+    }
+    str += ';';
+    return "\033[" + std::string(key.value()) + str + 'p';
 }
 
 } // namespace ANSI
 
+#pragma region
+
 class Args;
+
 
 /**
  * Internal objects not intended for public use.
  */
 namespace detail {
-
-// ANSI helpers
-inline std::string u8(unsigned v) {
-    return std::to_string(v > 255 ? 255 : v);
-}
-
-inline std::string rgbConstruct(unsigned r, unsigned g, unsigned b) {
-    std::string s;
-    s.reserve(12); // 255;255;255
-    s += u8(r);
-    s += ';';
-    s += u8(g);
-    s += ';';
-    s += u8(b);
-    return s;
-}
 
 template <typename T>
 struct function_traits;
@@ -1516,15 +1704,15 @@ private:
  *     static std::string command_description() { return "Start the web server"; }
  * 
  *     void setup(linea::Command& cmd) override {
- *     cmd.option("--port, -p", port)
- *          .description_text("Port to serve on").done()
- *        .flag("--verbose, -v", verbose).done();
- *   }
+ *         cmd.option("--port, -p", port)
+ *             .description_text("Port to serve on").done()
+ *             .flag("--verbose, -v", verbose).done();
+ *     }
  * 
- *   void execute(const linea::Args& args) override {
- *     std::cout << "Starting server on " << port
- *               << (verbose ? "(verbose)" : "") << std::endl;
- *   }
+ *     void execute(const linea::Args& args) override {
+ *         std::cout << "Starting server on " << port
+ *                   << (verbose ? "(verbose)" : "") << std::endl;
+ *     }
  * 
  * private:
  *     int port = 8080;
@@ -1812,7 +2000,7 @@ public:
         }
     };
 
-    ProgressBar(size_t total, size_t width = 50, Theme theme = Themes::classic(), Options options = {}) : total_(total), value_(0), width_(width), theme_(theme), options_(options) {
+    ProgressBar(size_t total, size_t width = 50, Theme theme = Themes::classic(), Options options = {.progress_in_bar=false,.eta_enabled=true,.items_per_second=false}) : total_(total), value_(0), width_(width), theme_(theme), options_(options) {
         detail::enableANSI();
     }
 
@@ -1937,7 +2125,8 @@ private:
     std::function<std::string(const ProgressBar&)> formatter_;
 
     std::string repeat(char c, size_t count) const {
-        std::string(count, c);
+        std::string s = std::string(count, c);
+        return s;
     }
 
     std::string buildRawBar(size_t filled) const {
@@ -2108,6 +2297,7 @@ public:
 
     Table& setColumn(size_t col, ColumnConfig config) {
         if (col < aligns_.size()) columns_[col] = config;
+        return *this;
     }
 
     void render() const {
@@ -2417,7 +2607,7 @@ protected:
                         std::cout << "\b \b";
                     }
                 }
-            } else {
+            } else if (ch != '\n') {
                 password += ch;
                 if (options_.show_mask) {
                     std::cout << options_.mask_char;
@@ -2581,5 +2771,7 @@ private:
 };
 
 } // namespace ui
+
+#pragma endregion
 
 } // namespace linea

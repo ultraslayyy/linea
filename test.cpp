@@ -30,7 +30,54 @@ private:
     bool verbose = false;
 };
 
+class LoginCommand : public linea::AutoRegisteredCommand<LoginCommand> {
+public:
+    static std::string command_name() { return "login"; }
+    static std::string command_description() { return "Login to the server"; }
+
+    void setup(linea::Command& cmd) override {
+        cmd.option("--pass,-p", pass)
+            .description_text("Enter password from CLI args").done();
+    }
+
+    void execute(const linea::Args& args) override {
+        if (pass.empty()) {
+            linea::ui::PromptPassword prompt;
+            prompt.setLabel("Enter password:");
+            prompt.setValidator([&](const std::string& input) -> bool {
+                if (input == password) return true;
+                return false;
+            }, "Invalid password, please try again.");
+            pass = prompt.get();
+        }
+
+        if (pass != password) {
+            std::cout << "Incorrect password\n";
+            std::cout << pass << "\n";
+            return;
+        }
+
+        std::cout << "Logged in successfully!\nLoading data...\n";
+
+        linea::ui::Table table;
+        table.setHeaders({"id", "username"});
+        table.addRow({"0", "Baby"});
+        table.addRow({"1", "John"});
+        table.addRow({"2", "Jane"});
+        table.render();
+
+        std::cout << "Successfully loaded data!\n";
+        return;
+    }
+
+private:
+    std::string pass = "";
+
+    std::string password = "abc"; // test password
+};
+
 REGISTER_COMMAND(BuildCommand, "build", "Build the server for production")
+// REGISTER_COMMAND(LoginCommand, "login", "Log in to the server");
 
 int main(int argc, char** argv) {
     linea::App app("AppName", "CLi app ig");
