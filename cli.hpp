@@ -243,8 +243,19 @@ namespace linea {
 #endif
 */
 
-#define REGISTER_COMMAND(ClassName, Name, Desc) \
-    static linea::ControllerRegistrar<ClassName> _registrar_##ClassName(Name, Desc);
+#define REGISTER_COMMAND_3(ClassName, Name, Desc) \
+    static linea::ControllerRegistrar<ClassName> _registrar_##ClassName(Name, Desc)
+
+#define REGISTER_COMMAND_2(ClassName, Name) \
+    static linea::ControllerRegistrar<ClassName> _registrar_##ClassName(Name)
+
+#define REGISTER_COMMAND_1(ClassName) \
+    static linea::ControllerRegistrar<ClassName> _registrar_##ClassName
+
+#define GET_MACRO(_1,_2,_3,NAME,...) NAME
+
+#define REGISTER_COMMAND(...) \
+    GET_MACRO(__VA_ARGS__, REGISTER_COMMAND_3, REGISTER_COMMAND_2, REGISTER_COMMAND_1)(__VA_ARGS__)
 
 namespace linea {
 
@@ -1038,11 +1049,10 @@ inline std::string_view MAP_KEY(KBD::__detail::Item key, const std::vector<std::
 
 class Args;
 
-
 /**
  * Internal objects not intended for public use.
  */
-namespace detail {
+namespace __detail {
 
 template <typename T>
 struct function_traits;
@@ -1141,16 +1151,17 @@ std::string get_command_description() {
 }
 
 // Enable ANSI support for Windows
-void enableANSI() {
+HANDLE enableANSI() {
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD mode = 0;
     GetConsoleMode(hOut, &mode);
     SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    return hOut;
 #endif
 }
 
-} // namespace detail
+} // namespace __detail
 
 enum class ErrorKind {
     UnknownCommand,
@@ -1337,12 +1348,27 @@ protected:
     }
 };
 
+//template <typename T, typename = typename std::enable_if<std::is_base_of<CommandController, T>::value && !std::is_same<CommandController, T>::value>::type>
 template <typename T>
 struct ControllerRegistrar {
     ControllerRegistrar(const std::string& name, const std::string& desc) {
+        register_it(name, desc);
+    }
+
+    ControllerRegistrar(const std::string& name) {
+        register_it(name, "");
+    }
+
+    ControllerRegistrar() {
+        register_it(__detail::get_command_name<T>(), __detail::get_command_description<T>());
+    }
+
+private:
+    void register_it(const std::string& name, const std::string& desc) {
         auto& reg = CommandController::get_registry();
 
-        auto it = std::find_if(reg.begin(), reg.end(), [&](const auto& r) { return r.name == name; });
+        auto it = std::find_if(reg.begin(), reg.end(),
+            [&](const auto& r) { return r.name == name; });
 
         if (it == reg.end()) {
             reg.push_back({
@@ -1363,15 +1389,15 @@ public:
     T default_val{};
 
     Option(const std::string& name, T& ref) : target(&ref) {
-        detail::parse_names(name, long_name, short_name);
+        __detail::parse_names(name, long_name, short_name);
     }
 
     Option(const std::string& name) : target(nullptr) {
-        detail::parse_names(name, long_name, short_name);
+        __detail::parse_names(name, long_name, short_name);
     }
 
     Option(CommandController* ctx, const std::string& name, const std::string& desc = "") {
-        detail::parse_names(name, long_name, short_name);
+        __detail::parse_names(name, long_name, short_name);
         description = desc;
 
         if (ctx) {
@@ -1416,7 +1442,7 @@ public:
     }
 
     std::string type_name() const override {
-        return detail::pretty_type<T>();
+        return __detail::pretty_type<T>();
     }
 
     bool is_flag() const override {
@@ -1478,11 +1504,11 @@ public:
 class Flag : public OptionBase {
 public:
     Flag(const std::string& name, bool& ref) : target(&ref), value(false) {
-        detail::parse_names(name, long_name, short_name);
+        __detail::parse_names(name, long_name, short_name);
     }
 
     Flag(const std::string& name) : target(nullptr), value(false) {
-        detail::parse_names(name, long_name, short_name);
+        __detail::parse_names(name, long_name, short_name);
     }
 
     void set(const std::string&) override {
@@ -1661,7 +1687,7 @@ private:
 
         if constexpr (std::is_same_v<T, Args>) {
             return args;
-        } else if constexpr (detail::has_bind_v<T>) {
+        } else if constexpr (__detail::has_bind_v<T>) {
             T obj{};
             T::bind(obj, args);
             return obj;
@@ -1688,45 +1714,10 @@ private:
         } else if constexpr (std::is_invocable_v<Fn>) {
             fn();
         } else {
-            using T = detail::function_arg_t<Fn>;
+            using T = __detail::function_arg_t<Fn>;
             fn(resolve<T>(args));
         }
     }
-};
-
-/**
- * Allows:
- * @brief
- * ```cpp
- * class ServeCommand : public linea::AutoRegisteredCommand<ServeCommand> {
- * public:
- *     static std::string command_name() { return "serve"; }
- *     static std::string command_description() { return "Start the web server"; }
- * 
- *     void setup(linea::Command& cmd) override {
- *         cmd.option("--port, -p", port)
- *             .description_text("Port to serve on").done()
- *             .flag("--verbose, -v", verbose).done();
- *     }
- * 
- *     void execute(const linea::Args& args) override {
- *         std::cout << "Starting server on " << port
- *                   << (verbose ? "(verbose)" : "") << std::endl;
- *     }
- * 
- * private:
- *     int port = 8080;
- *     bool verbose = false;
- * };
- * ```
- */
-template <typename Derived>
-class AutoRegisteredCommand : public CommandController {
-protected:
-    static inline ControllerRegistrar<Derived> registrar{
-        detail::get_command_name<Derived>(),
-        detail::get_command_description<Derived>()
-    };
 };
 
 class App {
@@ -1734,7 +1725,7 @@ public:
     std::string name;
     std::string description;
 
-    App(const std::string& n, const std::string& desc = "") : name(n), description(desc) {}
+    App(const std::string& n = "", const std::string& desc = "") : name(n), description(desc) {}
 
     Command& command(const std::string& name) {
         auto cmd = std::make_unique<Command>(name);
@@ -1746,14 +1737,14 @@ public:
 
     int run(int argc, char** argv) {
         try {
-            detail::enableANSI();
-
-            if (argc < 2) {
-                print_help();
-                return 0;
-            }
+            __detail::enableANSI();
 
             load_controllers();
+
+            if (argc < 2) {
+                print_help(argv[0]);
+                return 0;
+            }
 
             std::string cmd_name = argv[1];
 
@@ -1774,7 +1765,7 @@ public:
 
                 if (arg.rfind("--", 0) == 0 && arg.find('=') != std::string::npos) {
                     auto eq = arg.find('=');
-                    std::string key = detail::normalise(arg.substr(0, eq));
+                    std::string key = __detail::normalise(arg.substr(0, eq));
                     std::string value = arg.substr(eq + 1);
 
                     auto it = cmd.option_map.find(key);
@@ -1792,7 +1783,7 @@ public:
                 }
 
                 if (arg.rfind("--", 0) == 0) {
-                    std::string key = detail::normalise(arg);
+                    std::string key = __detail::normalise(arg);
 
                     auto it = cmd.option_map.find(key);
                     if (it == cmd.option_map.end()) {
@@ -1888,15 +1879,20 @@ public:
         }
     }
 
-    void print_help() {
-        std::cout << name;
+    void print_help(const char* n) {
+        if (!name.empty()) {
+            std::cout << name;
+        } else {
+            std::cout << n;
+        }
+
         if (!description.empty()) {
             std::cout << " - " << description;
         }
         std::cout << "\n\n";
         
         std::cout << "Usage:\n";
-        std::cout << "  " << name << " <command> [options]\n\n";
+        std::cout << "  " << (name.empty() ? n : name) << " <command> [options]\n\n";
 
         size_t max_width = 0;
         for (auto& cmd : commands) {
@@ -2001,7 +1997,7 @@ public:
     };
 
     ProgressBar(size_t total, size_t width = 50, Theme theme = Themes::classic(), Options options = {.progress_in_bar=false,.eta_enabled=true,.items_per_second=false}) : total_(total), value_(0), width_(width), theme_(theme), options_(options) {
-        detail::enableANSI();
+        linea::__detail::enableANSI();
     }
 
     ProgressBar& set(size_t value) {
@@ -2593,7 +2589,14 @@ public:
         return *this;
     }
 
+    Prompt& setLiveValidator(std::function<bool(const char, const std::string&)> fn) {
+        liveValidator_ = fn;
+        return *this;
+    }
+
 protected:
+    std::function<bool(const char, const std::string&)> liveValidator_;
+
     std::string readInput() override {
         std::string password;
 
@@ -2608,6 +2611,7 @@ protected:
                     }
                 }
             } else if (ch != '\n') {
+                if (liveValidator_ && !liveValidator_(ch, password)) continue;
                 password += ch;
                 if (options_.show_mask) {
                     std::cout << options_.mask_char;
@@ -2619,9 +2623,9 @@ protected:
         tcgetattr(STDIN_FILENO, &oldt);
         newt = oldt;
         newt.c_lflag &= ~ECHO;
-        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+        tcsetattr(STDIN_FILENO, TCSANOW, newt);
 
-        std::getline(std::cin, passwod);
+        std::getline(std::cin, password);
 
         tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
 
@@ -2638,12 +2642,17 @@ private:
     MaskOptions options_;
 };
 
+/**
+ * @throws
+ * - Ctrl+C
+ * 
+ * - No present options
+ */ 
 class PromptSelect : public Prompt {
 public:
     PromptSelect() {
 #ifdef _WIN32
-        hConsole_ = GetStdHandle(STD_OUTPUT_HANDLE);
-        detail::enableANSI();
+        hConsole_ = linea::__detail::enableANSI(); // Return hConsole
 #endif
     }
 
@@ -2657,6 +2666,7 @@ public:
         return *this;
     }
 
+protected:
     std::string readInput() override {
         if (options_.empty()) {
             throw std::runtime_error("PromptSelect: no options provided");

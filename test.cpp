@@ -30,7 +30,7 @@ private:
     bool verbose = false;
 };
 
-class LoginCommand : public linea::AutoRegisteredCommand<LoginCommand> {
+class LoginCommand : public linea::CommandController {
 public:
     static std::string command_name() { return "login"; }
     static std::string command_description() { return "Login to the server"; }
@@ -76,11 +76,11 @@ private:
     std::string password = "abc"; // test password
 };
 
-REGISTER_COMMAND(BuildCommand, "build", "Build the server for production")
-// REGISTER_COMMAND(LoginCommand, "login", "Log in to the server");
+REGISTER_COMMAND(BuildCommand, "build", "Build the server for production");
+REGISTER_COMMAND(LoginCommand);
 
 int main(int argc, char** argv) {
-    linea::App app("AppName", "CLi app ig");
+    linea::App app;
     int port;
     bool verbose = false;
 
@@ -106,6 +106,11 @@ int main(int argc, char** argv) {
             }
 
             std::cout << "\nDone\n";
+        });
+
+    app.command("help")
+        .run([&]() {
+            app.print_help(argv[0]);
         });
 
     return app.run(argc, argv);
