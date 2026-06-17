@@ -134,6 +134,7 @@
 #include <chrono>
 #include <concepts>
 #include <functional>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -1097,6 +1098,16 @@ static inline void parse_names(const std::string& input, std::string& long_name,
     }
 }
 
+// Async helpers
+
+// Lower overhead than `std::async(std::launch::deferred, []{});`
+// Especially in C++17
+static inline std::future<void> async_deferred() {
+    std::promise<void> p;
+    p.set_value();
+    return p.get_future();
+}
+
 // Command helpers
 template <typename T, typename = void>
 struct has_bind : std::false_type{};
@@ -1108,6 +1119,7 @@ template <typename T>
 inline constexpr bool has_bind_v = has_bind<T>::value;
 
 // AutoRegisteredCommand helpers
+/*
 template <typename T>
 concept HasConstexprName = requires {
     { T::command_name } -> std::convertible_to<const char*>;
@@ -1149,10 +1161,75 @@ std::string get_command_description() {
         return "";
     }
 }
+*/
+
+template <typename T, typename = void>
+struct has_constexpr_name : std::false_type {};
+
+template <typename T>
+struct has_constexpr_name<T, std::void_t<decltype(T::command_name)>>
+    : std::is_convertible<decltype(T::command_name), const char*> {};
+
+template <typename T>
+inline constexpr bool has_constexpr_name_v = has_constexpr_name<T>::value;
+
+template <typename T, typename = void>
+struct has_function_name : std::false_type {};
+
+template <typename T>
+struct has_function_name<T, std::void_t<decltype(std::declval<T>().command_name())>> 
+    : std::is_convertible<decltype(std::declval<T>().command_name()), std::string> {};
+
+template <typename T>
+inline constexpr bool has_function_name_v = has_function_name<T>::value;
+
+
+template <typename T, typename = void>
+struct has_constexpr_description : std::false_type {};
+
+template <typename T>
+struct has_constexpr_description<T, std::void_t<decltype(T::command_description)>> 
+    : std::is_convertible<decltype(T::command_description), const char*> {};
+
+template <typename T>
+inline constexpr bool has_constexpr_description_v = has_constexpr_description<T>::value;
+
+
+template <typename T, typename = void>
+struct has_function_description : std::false_type {};
+
+template <typename T>
+struct has_function_description<T, std::void_t<decltype(std::declval<T>().command_description())>> 
+    : std::is_convertible<decltype(std::declval<T>().command_description()), std::string> {};
+
+template <typename T>
+inline constexpr bool has_function_description_v = has_function_description<T>::value;
+
+template <typename T>
+std::string get_command_name() {
+    if constexpr (has_constexpr_name_v<T>) {
+        return T::command_name;
+    } else if constexpr (has_function_name_v<T>) {
+        return T::command_name();
+    } else {
+        static_assert(sizeof(T) == 0, "Command must define command_name");
+    }
+}
+
+template <typename T>
+std::string get_command_description() {
+    if constexpr (has_constexpr_description_v<T>) {
+        return T::command_description;
+    } else if constexpr (has_function_description_v<T>) {
+        return T::command_description();
+    } else {
+        return "";
+    }
+}
 
 // Enable ANSI support for Windows
-HANDLE enableANSI() {
 #ifdef _WIN32
+HANDLE enableANSI() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD mode = 0;
     GetConsoleMode(hOut, &mode);
@@ -1318,7 +1395,26 @@ class CommandController {
 public:
     virtual ~CommandController() = default;
     virtual void setup(Command& cmd) = 0;
-    virtual void execute(const Args& args) = 0;
+
+    virtual void execute(const Args& args) {}
+
+    /**
+     * Asynchronous usage. For example:
+     * @brief
+     * ```cpp
+     * std::future<void> execute_async(const Args& args) override {
+     *     return std::async(std::launch::async, [this]() {
+     *         std::cout << "Doing something...\n";
+     *         std::this_thread::sleep_for(std::chrono::seconds(1));
+     *         std::cout << "Done something!\n";
+     *     });
+     * }
+     * ```
+     */
+    virtual std::future<void> execute_async(const Args& args) {
+        execute(args);
+        return __detail::async_deferred();
+    }
 
     struct CommandSchema {
         std::unordered_map<std::string, OptionBase*> options;
@@ -1348,8 +1444,8 @@ protected:
     }
 };
 
-//template <typename T, typename = typename std::enable_if<std::is_base_of<CommandController, T>::value && !std::is_same<CommandController, T>::value>::type>
-template <typename T>
+//template <typename T>
+template <typename T, typename = typename std::enable_if<std::is_base_of<CommandController, T>::value && !std::is_same<CommandController, T>::value>::type>
 struct ControllerRegistrar {
     ControllerRegistrar(const std::string& name, const std::string& desc) {
         register_it(name, desc);
@@ -1543,7 +1639,7 @@ public:
     std::string name;
     std::string description;
 
-    std::function<void(const Args&)> action;
+    std::function<std::future<void>(const Args&)> action;
 
     std::vector<std::unique_ptr<OptionBase>> options;
     std::unordered_map<std::string, OptionBase*> option_map;
@@ -1597,14 +1693,37 @@ public:
         return *this;
     }
 
+    /**
+     * @brief
+     * Code that executes when a command runs. Can be synchronous:
+     * ```cpp
+     * app.command("ping").run([]() {
+     *     std::cout << "Pong!";
+     * });
+     * ```
+     * Or asynchronous:
+     * ```cpp
+     * app.command("download")
+     *     .run([](const Args& args) -> std::future<void> {
+     *         return std::async(std::launch::async, []() {
+     *             std::cout << "Starting download...\n";
+     *             std::this_thread::sleep_for(std::chrono::seconds(3));
+     *             std::cout << "Download complete!\n";
+     *         });
+     *     });
+     * ```
+     */
     template <typename Fn>
     Command& run(Fn fn) {
-        action = [this, fn](const Args& args) {
+        action = [this, fn](const Args& args) -> std::future<void> {
             invoke(fn, args);
         };
         return *this;
     }
 
+    /**
+     * @deprecated Never use, it does not work at all
+     */
     template <typename T>
     Command& bind(std::function<T(const Args&)> fn) {
         binder = [fn](const Args& args) -> std::any {
@@ -1708,14 +1827,27 @@ private:
     }
 
     template <typename Fn>
-    void invoke(Fn& fn, const Args& args) {
+    std::future<void> invoke(Fn& fn, const Args& args) {
         if constexpr (std::is_invocable_v<Fn, const Args&>) {
-            fn(args);
+            using Ret = std::invoke_result_t<Fn, const Args&>;
+            if constexpr (std::is_same_v<Ret, std::future<void>>) {
+                return fn(args);
+            } else {
+                fn(args);
+                return __detail::async_deferred();
+            }
         } else if constexpr (std::is_invocable_v<Fn>) {
-            fn();
+            using Ret = std::invoke_result_t<Fn>;
+            if constexpr (std::is_same_v<Ret, std::future<void>>) {
+                return fn();
+            } else {
+                fn();
+                return __detail::async_deferred();
+            }
         } else {
             using T = __detail::function_arg_t<Fn>;
             fn(resolve<T>(args));
+            return __detail::async_deferred();
         }
     }
 };
@@ -1737,7 +1869,9 @@ public:
 
     int run(int argc, char** argv) {
         try {
+#ifdef _WIN32
             __detail::enableANSI();
+#endif
 
             load_controllers();
 
@@ -1863,8 +1997,9 @@ public:
             }
 
             if (cmd.action) {
-                Args args{ &cmd.option_map, &cmd.positionals };
-                cmd.action(args);
+                Args args{&cmd.option_map, &cmd.positionals};
+                std::future<void> async_task = cmd.action(args);
+                async_task.get();
             }  else {
                 throw CLIError(ErrorKind::UnknownCommand, "Unknown command: " + cmd_name + "\n");
             }
@@ -1922,8 +2057,8 @@ private:
             controller_instance->setup(cmd);
 
             std::shared_ptr<CommandController> shared_controller = std::move(controller_instance);
-            cmd.run([shared_controller](const Args& args) {
-                shared_controller->execute(args);
+            cmd.run([shared_controller](const Args& args) -> std::future<void> {
+                return shared_controller->execute_async(args);
             });
 
         }
@@ -1997,7 +2132,9 @@ public:
     };
 
     ProgressBar(size_t total, size_t width = 50, Theme theme = Themes::classic(), Options options = {.progress_in_bar=false,.eta_enabled=true,.items_per_second=false}) : total_(total), value_(0), width_(width), theme_(theme), options_(options) {
+#ifdef _WIN32
         linea::__detail::enableANSI();
+#endif
     }
 
     ProgressBar& set(size_t value) {
