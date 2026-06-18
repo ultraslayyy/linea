@@ -1108,6 +1108,15 @@ static inline std::future<void> async_deferred() {
     return p.get_future();
 }
 
+template <typename T, typename = void>
+struct is_future : std::false_type{};
+
+template <typename T>
+struct is_future<std::future<T>> : std::true_type{};
+
+template <typename T>
+inline constexpr bool is_future_v = is_future<T>::value;
+
 // Command helpers
 template <typename T, typename = void>
 struct has_bind : std::false_type{};
@@ -1226,6 +1235,30 @@ std::string get_command_description() {
         return "";
     }
 }
+
+// helpers for something I forgor
+template <typename T, typename Args, typename = void>
+struct argument_resolver {
+    static T resolve(const Args& args) {
+        return args;
+    }
+};
+
+template <typename T, typename Args>
+struct argument_resolver<T, Args, std::enable_if<!std::is_same<T, Args>::value && has_bind_v<T>>> {
+    static T resolve(const Args& args) {
+        T obj{};
+        T::bind(obj, args);
+        return obj;
+    }
+};
+
+template <typename T, typename Args>
+struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind_v<T> && std::is_constructible<T, const Args&>::value>> {
+    static T resolve(const Args& args) {
+        return T(args);
+    }
+};
 
 // Enable ANSI support for Windows
 #ifdef _WIN32
@@ -1583,14 +1616,6 @@ public:
 
     Positional(CommandController* ctx, const std::string& name, bool required) : Positional(ctx, name, "", required) {}
 
-    /*Positional(CommandController* ctx, const std::string& name, const std::string& desc, bool required) : Option<T>(nullptr, name, desc) {
-        this->long_name = name;
-
-        if (ctx) {
-            ctx->schema.positionals.push_back({name, this, required});
-        }
-    }*/
-
     Positional& set_required(bool is_req = true) {
         required = is_req;
         return *this;
@@ -1716,7 +1741,7 @@ public:
     template <typename Fn>
     Command& run(Fn fn) {
         action = [this, fn](const Args& args) -> std::future<void> {
-            invoke(fn, args);
+            return invoke(fn, args);
         };
         return *this;
     }
@@ -1804,33 +1829,28 @@ private:
             return std::any_cast<T>(val);
         }
 
-        if constexpr (std::is_same_v<T, Args>) {
-            return args;
-        } else if constexpr (__detail::has_bind_v<T>) {
-            T obj{};
-            T::bind(obj, args);
-            return obj;
-        } else if constexpr (std::is_constructible_v<T, const Args&>) {
-            return T(args);
-        } else {
-            static_assert(!std::is_same_v<T, T>,
-                "linea::Command::run(): Cannot construct handler argument.\n"
-                "Provide one of:\n"
-                " - []()\n"
-                " - [](linea::Args)\n"
-                " - [](T) where T has:\n"
-                "     * T::bind(T& Args)\n"
-                "     * or constructor T(Args)\n"
-                "     * or .bind<T>() on command"
-            );
-        }
+        static_assert(
+            std::is_same<T, Args>::value ||
+            __detail::has_bind_v<T> ||
+            std::is_constructible<T, const Args&>::value,
+            "linea::Command::run(): Cannot construct handler argument.\n"
+            "Provide one of:\n"
+            " - []()\n"
+            " - [](linea::Args)\n"
+            " - [](T) where T has:\n"
+            "     * T::bind(T& Args)\n"
+            "     * or constructor T(Args)\n"
+            "     * or .bind<T>() on command"
+        );
+
+        return __detail::argument_resolver<T, Args>::resolve(args);
     }
 
     template <typename Fn>
     std::future<void> invoke(Fn& fn, const Args& args) {
         if constexpr (std::is_invocable_v<Fn, const Args&>) {
             using Ret = std::invoke_result_t<Fn, const Args&>;
-            if constexpr (std::is_same_v<Ret, std::future<void>>) {
+            if constexpr (__detail::is_future_v<Ret>) {
                 return fn(args);
             } else {
                 fn(args);
@@ -1838,7 +1858,7 @@ private:
             }
         } else if constexpr (std::is_invocable_v<Fn>) {
             using Ret = std::invoke_result_t<Fn>;
-            if constexpr (std::is_same_v<Ret, std::future<void>>) {
+            if constexpr (__detail::is_future_v<Ret>) {
                 return fn();
             } else {
                 fn();
@@ -2125,8 +2145,8 @@ public:
             return {
                 .fill = '=',
                 .empty = ' ',
-                .left =  '|',
-                .right = '|'
+                .left =  '[',
+                .right = ']'
             };
         }
     };

@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
             std::cout << "Port: " << port << std::endl;
             std::cout << "Verbose: " << verbose << std::endl;
 
-            linea::ui::ProgressBar bar(100, 40, linea::ui::ProgressBar::Themes::classic());
+            linea::ui::ProgressBar bar(100, 40, linea::ui::ProgressBar::Themes::minimal());
             bar.setLabel("Loading");
             bar.enableAutoETA();
 
