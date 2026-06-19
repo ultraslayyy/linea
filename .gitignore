@@ -3,3 +3,5 @@
 !*.cpp
 !.gitignore
 !README.md
+!Doxyfile
+!doxygen*

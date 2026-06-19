@@ -1,4 +1,8 @@
+#pragma once
+
 /**
+ * @file linea.hpp
+ * 
  * Basic setup:
  * ```
  * #include "cli.hpp"
@@ -109,7 +113,6 @@
  *   - Or something like that idk
  * - Async and signal handling
  *   - Ctrl+C
- *   - Async command support
  *   - Cancellation tokens
  * - Internationalisation (i18n)
  * - Built-in schema reflection
@@ -126,8 +129,6 @@
  *     - Completion
  * - Middleware
  */
-
-#pragma once
 
 #include <algorithm>
 #include <any>
@@ -155,7 +156,7 @@
 #include <unistd.h>
 #endif
 
-/**
+/*
 #if defined (_MSVC_LANG)
 #define LINEA_CPLUSPLUS _MSVC_LANG
 #else
