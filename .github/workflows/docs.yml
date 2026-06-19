@@ -3,6 +3,8 @@ name: Build and Deploy Doxygen
 on:
   push:
     branches: [ master ]
+    paths:
+      - 'linea.hpp'
 
 permissions:
   contents: read
