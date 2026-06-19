@@ -133,6 +133,7 @@
 #include <any>
 #include <chrono>
 #include <concepts>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <iomanip>
@@ -257,6 +258,62 @@ namespace linea {
 
 #define REGISTER_COMMAND(...) \
     GET_MACRO(__VA_ARGS__, REGISTER_COMMAND_3, REGISTER_COMMAND_2, REGISTER_COMMAND_1)(__VA_ARGS__)
+
+
+/**
+ * @brief
+ * Allows usage like:
+ * ```cpp
+ * struct Config {
+ *     int port;
+ *     bool verbose;
+ *
+ *     LINEA_BIND(
+ *         LINEA_FIELD(port),
+ *         LINEA_FIELD(verbose)
+ *     )
+ * };
+ * ```
+ * For:
+ * ```cpp
+ * app.command("...").run([](const Config& cfg) { ... });
+ * ```
+ */
+#define LINEA_FIELD(name) \
+    c.name = args.get<decltype(c.name)>(#name);
+
+#define LINEA_BIND(StructName, ...) \
+    static void bind(StructName& c, const linea::Args& args) { \
+        (void)args; \
+        __VA_ARGS__ \
+    }
+
+/**
+ * @brief
+ * Allows:
+ * ```cpp
+ * struct Config {
+ *     int port;
+ *     bool verbose;
+ * 
+ *     LINEA_OPTIONS(Config,
+ *         LINEA_OPTION(port),
+ *         LINEA_OPTION(verbose)
+ *     )
+ * };
+ * 
+ * app.command("service").options<Config>().run(...);
+ * ```
+ * (Registers --port and --verbose options, no shorthand (yet))
+ * 
+ * TODO: LINEA_OPTIONS_2(Struct, ...fieldNames) (maybe not possible because no struct iteration)
+ * TODO: Actually implement this
+ */
+#define LINEA_OPTION(Struct, field) \
+    linea::__detail::Field<Struct, decltype(Struct::field)> { #field, &Struct::field }
+
+#define LINEA_OPTIONS(TYPE, ...) \
+    static constexpr auto linea_fields = std::make_tuple(__VA_ARGS__);
 
 namespace linea {
 
@@ -1055,6 +1112,14 @@ class Args;
  */
 namespace __detail {
 
+// Macro helpers
+template <typename T, typename MemberT>
+struct Field {
+    const char* name;
+    MemberT::*member;
+};
+
+//
 template <typename T>
 struct function_traits;
 
@@ -1555,6 +1620,25 @@ public:
         return *this;
     }
 
+    /**
+     * @brief
+     * Allows usage like:
+     * ```cpp
+     * .check(linea::validators::file_exists<std::string>())
+     * .check(linea::validators::file_exists<std::string>(), "Custom message")
+     * ```
+     */
+    template <typename Validator>
+    Option& check(Validator v, std::string msg = "") {
+        validators.emplace_back(
+            [v = std::move(v)](const T& x) mutable {
+                return v(x);
+            },
+            msg.empty() ? v.message(long_name, value) : msg
+        );
+        return *this;
+    }
+
     void set(const std::string& str) override {
         std::istringstream iss(str);
         T tmp;
@@ -1659,6 +1743,173 @@ private:
     bool* target = nullptr;
 };
 
+// Built-in validators for common validations that may be required
+namespace validators {
+
+namespace __detail {
+
+template <typename T>
+auto to_string_impl(const T& v, int) -> decltype(std::string(v), std::string()) {
+    return std::to_string(v);
+}
+
+template <typename T>
+std::string to_string_impl(const T& v, ...) {
+    return "<unprintable>";
+}
+
+template <typename T>
+std::string to_string_generic(const T& v) {
+    if constexpr (std::is_convertible<T, std::string>::value) {
+        return v;
+    } else {
+        return to_string_impl(v, 0);
+    }
+}
+
+} // namespace __detail
+
+// FS
+template <typename T>
+struct file_exists {
+    bool operator()(const T& value) const {
+        return std::filesystem::exists(std::filesystem::path(value));
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return "File '" + __detail::to_string_generic(value) + "' does not exist (" + opt + ")";
+    }
+};
+
+// Numerical
+template <typename T>
+struct is_negative {
+    bool operator()(const T& value) const {
+        return value < 0;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must be negative (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T>
+struct is_positive {
+    bool inc_zero = false;
+
+    is_positive(bool include_zero = false) : inc_zero(include_zero) {}
+
+    bool operator()(const T& value) const {
+        return inc_zero ? value >= 0 : value > 0; // 0 is not technically positive fyi
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must be positive" + (inc_zero ? " or zero" : "")
+                   + " (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T>
+struct max {
+    T max;
+
+    max(T max_) : max(max_) {}
+
+    bool operator()(const T& value) const {
+        return value <= max;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " has a maximum of '" + __detail::to_string_generic(max)
+                   + "' (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T>
+struct min {
+    T min;
+
+    min(T min_) : min(min_) {}
+
+    bool operator()(const T& value) const {
+        return value >= min;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " has a minimum of '" + __detail::to_string_generic(min)
+                   + "' (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T>
+struct range {
+    T min;
+    T max;
+
+    range(T min_, T max_) : min(min_), max(max_) {}
+
+    bool operator()(const T& value) const {
+        return value >= min && value <= max;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must within the range [" + __detail::to_string_generic(min)
+                   + ", " + __detail::to_string_generic(max)
+                   + "] (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+// Strings
+template <typename T>
+struct one_of {
+    std::vector<T> values;
+
+    one_of(const std::vector<T>& values_) : values(values_) {}
+
+    bool operator()(const T& value) const {
+        return std::find(values.begin(), values.end(), value) != values.end();
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        std::string msg = opt + " must be one of: ";
+
+        for (size_t i = 0; i < values.size(); ++i) {
+            msg += __detail::to_string_generic(values[i]);
+            if (i + 1 < values.size()) msg += ", ";
+        }
+
+        msg += " (input: '" + __detail::to_string_generic(value) + "')";
+
+        return msg;
+    }
+};
+
+template <typename T>
+struct not_one_of {
+    one_of<T> o;
+
+    not_one_of(const std::vector<T>& values_) : o(values_) {}
+
+    bool operator()(const T& value) const {
+        return !o(value);
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        std::string msg = opt + " must not be one of: ";
+        
+        for (size_t i = 0; i < o.values.size(); ++i) {
+            msg += __detail::to_string_generic(o.values[i]);
+            if (i + 1 < o.values.size()) msg += ", ";
+        }
+
+        msg += " (input: '" + __detail::to_string_generic(value) + "')";
+
+        return msg;
+    }
+};
+
+}; // namespace validators
+
 class Command {
 public:
     std::string name;
@@ -1673,48 +1924,40 @@ public:
 
     Command(const std::string& n) : name(n) {}
 
+    Command(const std::string& n, const std::string& d) : name(n), description(d) {}
+
     template <typename T>
     Option<T>& option(const std::string& name, T& var) {
-        std::unique_ptr<Option<T>> opt = std::make_unique<Option<T>>(name, var);
-        Option<T>* ptr = opt.get();
+        return register_option(std::make_unique<Option<T>>(name, var));
+    }
 
-        ptr->parent = this;
-
-        option_map[ptr->long_name] = ptr;
-        if (!ptr->short_name.empty()) {
-            option_map[ptr->short_name] = ptr;
-        }
-
-        options.push_back(std::move(opt));
-        return *ptr;
+    template <typename T>
+    Option<T>& option(const std::string& name) {
+        return register_option(std::make_unique<Option<T>>(name));
     }
 
     template <typename T>
     Option<T>& argument(const std::string& name, T& var) {
-        std::unique_ptr<Option<T>> opt = std::make_unique<Option<T>>(name, var);
-        Option<T>* ptr = opt.get();
-        positionals.push_back({name, ptr, false});
-        options.push_back(std::move(opt));
-        return *ptr;
+        return register_positional(name, std::make_unique<Option<T>>(name, var));
+    }
+
+    template <typename T>
+    Option<T>& argument(const std::string& name) {
+        return register_positional(name, std::make_unique<Option<T>>(name));
     }
 
     Flag& flag(const std::string& name, bool& var) {
-        auto opt = std::make_unique<Flag>(name, var);
-        auto* ptr = opt.get();
-
-        ptr->parent = this;
-
-        option_map[ptr->long_name] = ptr;
-        if (!ptr->short_name.empty()) {
-            option_map[ptr->short_name] = ptr;
-        }
-        
-        options.push_back(std::move(opt));
-        return *ptr;
+        return register_option(std::make_unique<Flag>(name, var));
     }
 
-    Command& required() {
-        positionals.back().required = true;
+    Flag& flag(const std::string& name) {
+        return register_option(std::make_unique<Flag>(name));
+    }
+
+    Command& required(bool value = true) {
+        if (positionals.size() != 0) {
+            positionals.back().required = value;
+        }
         return *this;
     }
 
@@ -1740,19 +1983,8 @@ public:
      */
     template <typename Fn>
     Command& run(Fn fn) {
-        action = [this, fn](const Args& args) -> std::future<void> {
+        action = [fn](const Args& args) -> std::future<void> {
             return invoke(fn, args);
-        };
-        return *this;
-    }
-
-    /**
-     * @deprecated Never use, it does not work at all
-     */
-    template <typename T>
-    Command& bind(std::function<T(const Args&)> fn) {
-        binder = [fn](const Args& args) -> std::any {
-            return fn(args);
         };
         return *this;
     }
@@ -1818,6 +2050,31 @@ public:
 
 private:
     std::function<std::any(const Args&)> binder;
+
+    template <typename T>
+    T& register_option(std::unique_ptr<T> opt) {
+        static_assert(std::is_base_of_v<OptionBase, T>);
+
+        T* ptr = opt.get();
+
+        ptr->parent = this;
+
+        option_map[ptr->long_name] = ptr;
+        if (!ptr->short_name.empty()) {
+            option_map[ptr->short_name] = ptr;
+        }
+
+        options.push_back(std::move(opt));
+        return *ptr;
+    }
+
+    template <typename T>
+    auto& register_positional(const std::string& name, std::unique_ptr<Option<T>> opt) {
+        Option<T>* ptr = opt.get();
+        positionals.push_back({name, ptr, false});
+        optionals.push_back(std::move(opt));
+        return *ptr;
+    }
 
     template <typename T>
     T resolve(const Args& args) {
@@ -2325,14 +2582,6 @@ private:
 
         return out;
     }
-
-    /* std::string buildBar(size_t filled) const {
-        std::string bar =
-            theme_.fill_color + std::string(filled, theme_.fill) + theme_.reset_color +
-            theme_.empty_color + std::string(width_ - filled, theme_.empty) + theme_.reset_color;
-
-        return bar;
-    } */
 
     double computeETASeconds() const {
         if (value_ == 0) return -1.0;

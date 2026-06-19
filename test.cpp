@@ -7,10 +7,10 @@ struct Config {
     int port;
     bool verbose;
 
-    static void bind(Config& c, const linea::Args& args) {
-        c.port = args.get<int>("port");
-        c.verbose = args.get<bool>("verbose");
-    }
+    LINEA_BIND(Config,
+        LINEA_FIELD(port)
+        LINEA_FIELD(verbose)
+    )
 };
 
 class BuildCommand : public linea::CommandController {
@@ -86,9 +86,7 @@ int main(int argc, char** argv) {
 
     app.command("serve")
         .option("--port,-p", port)
-            .check([](const int p) {
-                return p > 1 && p < 65536;
-            }, "Port must be between 1 and 65535")
+            .check(linea::validators::range<int>(1, 65535))
             .description_text("Port to serve on")
             .done()
         .flag("--verbose,-v", verbose).done()
