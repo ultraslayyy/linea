@@ -142,7 +142,14 @@
 #define LINEA_CPP20 (LINEA_CPLUSPLUS >= 202002L)
 #define LINEA_CPP26 (LINEA_CPLUSPLUS >= 202603L)
 
+#if LINEA_CPP17
+#define LINEA_INLINE inline
+#else
+#define LINEA_INLINE
+#endif
+
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 // #include <concepts> // 20
 #include <functional>
@@ -154,6 +161,7 @@
 #include <type_traits>
 #include <typeinfo>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #ifdef LINEA_CPP17
@@ -163,7 +171,9 @@
 #endif
 
 #ifdef _WIN32
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <conio.h>
 #include <windows.h>
 #else
@@ -185,7 +195,6 @@
 
 #define REGISTER_COMMAND(...) \
     GET_MACRO(__VA_ARGS__, REGISTER_COMMAND_3, REGISTER_COMMAND_2, REGISTER_COMMAND_1)(__VA_ARGS__)
-
 
 /**
  * @brief
@@ -254,13 +263,20 @@ class Args;
 namespace __detail {
 
 // Version specific polyfills
-#ifdef LINEA_CPP17
+#if LINEA_CPP17
 
 template <typename... Ts>
 using void_t = std::void_t<Ts...>;
 
+using in_place_t = std::in_place_t;
+
+using std::in_place;
+
 template <typename F, typename... Args>
-using invoke_result_t = std::invoke_result_t<F, Args...>
+using invoke_result = std::invoke_result<F, Args...>;
+
+template <typename F, typename... Args>
+using invoke_result_t = std::invoke_result_t<F, Args...>;
 
 template <typename F, typename... Args>
 using is_invocable = std::is_invocable<F, Args...>;
@@ -277,11 +293,9 @@ using std::any_cast;
 template <typename T>
 using optional = std::optional<T>;
 
-template <typename T>
 struct nullopt_t {};
 
-template <typename T>
-inline constexpr nullopt_t<T> nullopt{};
+inline constexpr nullopt_t nullopt{};
 
 namespace filesystem {
 
@@ -290,10 +304,18 @@ using std::filesystem::exists;
 
 }
 
+using std::clamp;
+
 #else
 
 template <typename...>
 using void_t = void;
+
+struct in_place_t {
+    explicit in_place_t() = default;
+};
+
+constexpr in_place_t in_place{};
 
 /* Invoke stuff */
 
@@ -305,13 +327,13 @@ struct is_reference_wrapper<std::reference_wrapper<T>> : std::true_type {};
 
 // Member-function invoke
 template <typename MemFn, typename T, typename... Args>
-auto invoke_impl(MemFn pmf, T&& obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value && !is_reference_wrapper<typename std::decay<T>::type>::value && !std::is_pointer<typename std::decay<T>::type>::value, decltype((std::forward<T>(obj).*pmf)(std::forward<Args>(args)...))::type;
+auto invoke_impl(MemFn pmf, T&& obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value && !is_reference_wrapper<typename std::decay<T>::type>::value && !std::is_pointer<typename std::decay<T>::type>::value, decltype((std::forward<T>(obj).*pmf)(std::forward<Args>(args)...))>::type;
 
 template <typename MemFn, typename T, typename... Args>
-auto invoke_impl(MemFn pmf, std::reference_wrapper<T> obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value, decltype((obj.get().*pmf)(std::forward<Args>(args)...))::type;
+auto invoke_impl(MemFn pmf, std::reference_wrapper<T> obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value, decltype((obj.get().*pmf)(std::forward<Args>(args)...))>::type;
 
 template <typename MemFn, typename T, typename... Args>
-auto invoke_impl(MemFn pmf, T* obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value, decltype(((*obj).*pmf)(std::forward<Args>(args)...))::type;
+auto invoke_impl(MemFn pmf, T* obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value, decltype(((*obj).*pmf)(std::forward<Args>(args)...))>::type;
 
 // Member-data invoke
 template <typename MemPtr, typename T>
@@ -354,7 +376,7 @@ template <typename F, typename... Args>
 struct is_invocable : is_invocable_impl<void, F, Args...> {};
 
 template <typename F, typename... Args>
-struct is_invocable_v = is_invocable<F, Args...>::value;
+LINEA_INLINE constexpr bool is_invocable_v = is_invocable<F, Args...>::value;
 
 // string_view
 class string_view {
@@ -366,11 +388,13 @@ public:
 
     constexpr string_view(const char* data, std::size_t size) : data_(data), size_(size) {}
 
+    string_view(const std::string& str) : data_(str.data()), size_(str.size()) {}
+
     constexpr const char* data() const {
         return data_;
     }
 
-    constexpr size_type size() const {
+    constexpr std::size_t size() const {
         return size_;
     }
 
@@ -387,6 +411,10 @@ private:
     std::size_t size_;
 };
 
+inline std::ostream& operator<<(std::ostream& os, string_view value) {
+    return os.write(value.data(), static_cast<std::streamsize>(value.size()));
+}
+
 // any
 class bad_any_cast : public std::bad_cast {
 public:
@@ -394,6 +422,16 @@ public:
         return "bad_any_cast";
     }
 };
+
+class any;
+
+template <typename T>
+typename std::enable_if<!std::is_reference<T>::value, T*>::type
+any_cast(any* a) noexcept;
+
+template <typename T>
+typename std::enable_if<!std::is_reference<T>::value, const T*>::type
+any_cast(const any* a) noexcept;
 
 class any {
 public:
@@ -403,8 +441,8 @@ public:
 
     any(any&& other) noexcept : ptr(std::move(other.ptr)) {}
 
-    template <typenameT, typename U = decay_t<T>, typename std::enable_if<!std::is_same<U, any>::value && std::is_copy_constructible<U>::value>::type* == nullptr>
-    any(T&& value) : ptr(new holder<U>(std::forward<T>(value))) {}
+    template <typename T>
+    any(T&& value) : ptr(new holder<typename std::decay<T>::type>(std::forward<T>(value))) {}
 
     ~any() = default;
 
@@ -416,14 +454,14 @@ public:
         return *this;
     }
 
-    any& operator=(const any&& other) {
+    any& operator=(any&& other) {
         if (this != &other) {
             ptr = std::move(other.ptr);
         }
         return *this;
     }
 
-    template <typenameT, typename U = decay_t<T>, typename std::enable_if<!std::is_same<U, any>::value && std::is_copy_constructible<U>::value>::type* == nullptr>
+    template <typename T, typename U = typename std::decay<T>::type, typename std::enable_if<!std::is_same<U, any>::value && std::is_copy_constructible<U>::value>::type* = nullptr>
     any& operator=(T&& value) {
         any temp(std::forward<T>(value));
         swap(temp);
@@ -476,10 +514,12 @@ private:
     using decay_t = typename std::decay<T>::type;
 
     template <typename T>
-    friend T* any_cast(any*) noexcept;
+    friend typename std::enable_if<!std::is_reference<T>::value, T*>::type
+    any_cast(any*) noexcept;
 
     template <typename T>
-    friend const T* any_cast(const any*) noexcept;
+    friend typename std::enable_if<!std::is_reference<T>::value, const T*>::type
+    any_cast(const any*) noexcept;
 };
 
 template <typename T>
@@ -489,7 +529,7 @@ any_cast(any* a) noexcept {
         return nullptr;
     }
 
-    return &static_cast<any::holder<T>*(a->ptr.get())->value;
+    return &static_cast<any::holder<T>*>(a->ptr.get())->value;
 }
 
 template <typename T>
@@ -598,13 +638,13 @@ public:
     }
 
     optional(T&& value) : engaged_(false) {
-        new (&storage) T(std::move(value));
+        new (&storage_) T(std::move(value));
         engaged_ = true;
     }
 
     template <typename... Args, typename std::enable_if<std::is_constructible<T, Args&&...>::value, int>::type = 0>
-    explicit optional(std::in_place_t, Args&&... args) : engaged_(false) {
-        new (&storage) T(std::forward<Args>(args)...);
+    explicit optional(in_place_t, Args&&... args) : engaged_(false) {
+        new (&storage_) T(std::forward<Args>(args)...);
         engaged_ = true;
     }
 
@@ -792,7 +832,7 @@ private:
         return reinterpret_cast<T*>(&storage_);
     }
 
-    const *T ptr() {
+    const T* ptr() const {
         return reinterpret_cast<const T*>(&storage_);
     }
 };
@@ -824,7 +864,7 @@ template <typename T>
 bool operator!=(const optional<T>& a, nullopt_t) {
     return a.has_value();
 }
-
+ 
 template <typename T>
 bool operator!=(nullopt_t, const optional<T>& a) {
     return a.has_value();
@@ -855,6 +895,12 @@ inline bool exists(const path& p) {
 }
 
 } // namespace filesystem
+
+// misc
+template <typename T>
+constexpr const T& clamp(const T& value, const T& lo, const T& hi) {
+    return value < lo ? lo : (hi < value ? hi : value);
+}
 
 #endif
 
@@ -926,17 +972,17 @@ template <typename T>
 struct is_future<std::future<T>> : std::true_type{};
 
 template <typename T>
-inline constexpr bool is_future_v = is_future<T>::value;
+LINEA_INLINE constexpr bool is_future_v = is_future<T>::value;
 
 // Command helpers
 template <typename T, typename = void>
 struct has_bind : std::false_type{};
 
 template <typename T>
-struct has_bind<T, std::void_t<decltype(T::bind(std::declval<T&>(), std::declval<const Args&>()))>> : std::true_type {};
+struct has_bind<T, void_t<decltype(T::bind(std::declval<T&>(), std::declval<const Args&>()))>> : std::true_type {};
 
 template <typename T>
-inline constexpr bool has_bind_v = has_bind<T>::value;
+LINEA_INLINE constexpr bool has_bind_v = has_bind<T>::value;
 
 // AutoRegisteredCommand helpers
 /*
@@ -987,44 +1033,44 @@ template <typename T, typename = void>
 struct has_constexpr_name : std::false_type {};
 
 template <typename T>
-struct has_constexpr_name<T, std::void_t<decltype(T::command_name)>>
+struct has_constexpr_name<T, void_t<decltype(T::command_name)>>
     : std::is_convertible<decltype(T::command_name), const char*> {};
 
 template <typename T>
-inline constexpr bool has_constexpr_name_v = has_constexpr_name<T>::value;
+LINEA_INLINE constexpr bool has_constexpr_name_v = has_constexpr_name<T>::value;
 
 template <typename T, typename = void>
 struct has_function_name : std::false_type {};
 
 template <typename T>
-struct has_function_name<T, std::void_t<decltype(std::declval<T>().command_name())>> 
+struct has_function_name<T, void_t<decltype(std::declval<T>().command_name())>> 
     : std::is_convertible<decltype(std::declval<T>().command_name()), std::string> {};
 
 template <typename T>
-inline constexpr bool has_function_name_v = has_function_name<T>::value;
-
+LINEA_INLINE constexpr bool has_function_name_v = has_function_name<T>::value;
 
 template <typename T, typename = void>
 struct has_constexpr_description : std::false_type {};
 
 template <typename T>
-struct has_constexpr_description<T, std::void_t<decltype(T::command_description)>> 
+struct has_constexpr_description<T, void_t<decltype(T::command_description)>> 
     : std::is_convertible<decltype(T::command_description), const char*> {};
 
 template <typename T>
-inline constexpr bool has_constexpr_description_v = has_constexpr_description<T>::value;
+LINEA_INLINE constexpr bool has_constexpr_description_v = has_constexpr_description<T>::value;
 
 
 template <typename T, typename = void>
 struct has_function_description : std::false_type {};
 
 template <typename T>
-struct has_function_description<T, std::void_t<decltype(std::declval<T>().command_description())>> 
+struct has_function_description<T, void_t<decltype(std::declval<T>().command_description())>> 
     : std::is_convertible<decltype(std::declval<T>().command_description()), std::string> {};
 
 template <typename T>
-inline constexpr bool has_function_description_v = has_function_description<T>::value;
+LINEA_INLINE constexpr bool has_function_description_v = has_function_description<T>::value;
 
+/*
 template <typename T>
 std::string get_command_name() {
     if constexpr (has_constexpr_name_v<T>) {
@@ -1045,6 +1091,43 @@ std::string get_command_description() {
     } else {
         return "";
     }
+} 
+*/
+
+template <typename T>
+typename std::enable_if<has_constexpr_name_v<T>, std::string>::type
+get_command_name() {
+    return T::command_name;
+}
+
+template <typename T>
+typename std::enable_if<!has_constexpr_name_v<T> && has_function_name_v<T>, std::string>::type
+get_command_name() {
+    return T::command_name();
+}
+
+template <typename T>
+typename std::enable_if<!has_constexpr_name_v<T> && !has_function_name_v<T>, std::string>::type
+get_command_name() {
+    static_assert(sizeof(T) == 0, "Command must define command_name");
+}
+
+template <typename T>
+typename std::enable_if<has_constexpr_description_v<T>, std::string>::type
+get_command_description() {
+    return T::command_description;
+}
+
+template <typename T>
+typename std::enable_if<!has_constexpr_description_v<T> && has_function_description_v<T>, std::string>::type
+get_command_description() {
+    return T::command_description();
+}
+
+template <typename T>
+typename std::enable_if<!has_constexpr_description_v<T> && !has_function_description_v<T>, std::string>::type
+get_command_description() {
+    return "";
 }
 
 // helpers for something I forgor
@@ -1126,244 +1209,252 @@ struct StringOrInt {
     StringOrInt(const char* value) : type(Type::String), i(0), s(value) {}
 };
 
+inline std::string string_view_str(linea::__detail::string_view str) {
+#if LINEA_CPP17
+    return std::string(str.data());
+#else
+    return str.str();
+#endif
+}
+
 }
 
 // C Escaped C0 control codes (ASCII control codes, originally ANSI X3.4, so it counts)
-inline constexpr char NUL = '\0';
-inline constexpr char BEL = '\a';
-inline constexpr char BS  = '\b';
-inline constexpr char HT  = '\t';
-inline constexpr char LF  = '\n';
-inline constexpr char BT  = '\v';
-inline constexpr char FF  = '\f';
-inline constexpr char CR  = '\r';
-inline constexpr char ESC = '\033'; // Also \e (GCC only), \033 is octal, \x1b is hexadecimal (\033 is more reliable and supported)
-inline constexpr char SP = ' '; // Yes, 'Space'. Not official C0 control character, but close to
+LINEA_INLINE constexpr char NUL = '\0';
+LINEA_INLINE constexpr char BEL = '\a';
+LINEA_INLINE constexpr char BS  = '\b';
+LINEA_INLINE constexpr char HT  = '\t';
+LINEA_INLINE constexpr char LF  = '\n';
+LINEA_INLINE constexpr char BT  = '\v';
+LINEA_INLINE constexpr char FF  = '\f';
+LINEA_INLINE constexpr char CR  = '\r';
+LINEA_INLINE constexpr char ESC = '\033'; // Also \e (GCC only), \033 is octal, \x1b is hexadecimal (\033 is more reliable and supported)
+LINEA_INLINE constexpr char SP = ' '; // Yes, 'Space'. Not official C0 control character, but close to
 
-inline constexpr char CRLF[] = "\r\n";
+LINEA_INLINE constexpr char CRLF[] = "\r\n";
 
-inline constexpr char SS2[]  = "\033N";  // Single Shift Two
-inline constexpr char LS2[]  = "\033n";  // Lock Shift Two
-inline constexpr char SS3[]  = "\033O";  // Single Shift Three
-inline constexpr char LS3[]  = "\033o";  // Lock Shift Three
-inline constexpr char DCS[]  = "\033P";  // Device Control String
-inline constexpr char CSI[]  = "\033[";  // Control Sequence Introducer
-inline constexpr char ST[]   = "\033\\"; // String Terminator
-inline constexpr char OSC[]  = "\033]";  // Operating System Command
-inline constexpr char SOS[]  = "\033X";  // Start of String
-inline constexpr char PM[]   = "\033^";  // Privacy Message
-inline constexpr char APC[]  = "\033_";  // Application Program Command
-inline constexpr char LS1R[] = "\033~";
+LINEA_INLINE constexpr char SS2[]  = "\033N";  // Single Shift Two
+LINEA_INLINE constexpr char LS2[]  = "\033n";  // Lock Shift Two
+LINEA_INLINE constexpr char SS3[]  = "\033O";  // Single Shift Three
+LINEA_INLINE constexpr char LS3[]  = "\033o";  // Lock Shift Three
+LINEA_INLINE constexpr char DCS[]  = "\033P";  // Device Control String
+LINEA_INLINE constexpr char CSI[]  = "\033[";  // Control Sequence Introducer
+LINEA_INLINE constexpr char ST[]   = "\033\\"; // String Terminator
+LINEA_INLINE constexpr char OSC[]  = "\033]";  // Operating System Command
+LINEA_INLINE constexpr char SOS[]  = "\033X";  // Start of String
+LINEA_INLINE constexpr char PM[]   = "\033^";  // Privacy Message
+LINEA_INLINE constexpr char APC[]  = "\033_";  // Application Program Command
+LINEA_INLINE constexpr char LS1R[] = "\033~";
 
-inline constexpr char COLUMNS_INSERT[]   = "\033['}";
-inline constexpr char COLUMNS_DELETE[]   = "\033['~";
+LINEA_INLINE constexpr char COLUMNS_INSERT[]   = "\033['}";
+LINEA_INLINE constexpr char COLUMNS_DELETE[]   = "\033['~";
 
-inline constexpr char REPEAT_LAST_CHAR[] = "\033[b";
+LINEA_INLINE constexpr char REPEAT_LAST_CHAR[] = "\033[b";
 
-inline constexpr char CURSOR_MOVE_HOME[]       = "\033[H";
+LINEA_INLINE constexpr char CURSOR_MOVE_HOME[]       = "\033[H";
 
-inline std::string HORIZONTAL_VERTICAL_POSITION(int l, int c) { return "\033[" + std::to_string(l) + ";" + std::to_string(c) + "f"; }
+LINEA_INLINE std::string HORIZONTAL_VERTICAL_POSITION(int l, int c) { return "\033[" + std::to_string(l) + ";" + std::to_string(c) + "f"; }
 
-inline std::string CURSOR_MOVE(int l, int c)           { return "\033[" + std::to_string(l) + ";" + std::to_string(c) + "H"; }
-inline std::string CUSOR_MOVE_ROW(int v)               { return "\033[" + std::to_string(v) + "d"; }
-inline std::string CURSOR_MOVE_UP(int v)               { return "\033[" + std::to_string(v) + "A"; }
-inline std::string CURSOR_MOVE_DOWN(int v)             { return "\033[" + std::to_string(v) + "B"; }
-inline std::string CURSOR_MODE_DOWN_ROWS(int v)        { return "\033[" + std::to_string(v) + "e"; }
-inline std::string CURSOR_MOVE_RIGHT(int v)            { return "\033[" + std::to_string(v) + "C"; }
-inline std::string CURSOR_MOVE_LEFT(int v)             { return "\033[" + std::to_string(v) + "D"; }
-inline std::string CURSOR_MOVE_START_LINE_DOWN(int v)  { return "\033[" + std::to_string(v) + "E"; }
-inline std::string CURSOR_MOVE_START_LINE_UP(int v)    { return "\033[" + std::to_string(v) + "F"; }
-inline std::string CURSOR_MOVE_COLUMN(int v)           { return "\033[" + std::to_string(v) + "G"; }
+LINEA_INLINE std::string CURSOR_MOVE(int l, int c)           { return "\033[" + std::to_string(l) + ";" + std::to_string(c) + "H"; }
+LINEA_INLINE std::string CUSOR_MOVE_ROW(int v)               { return "\033[" + std::to_string(v) + "d"; }
+LINEA_INLINE std::string CURSOR_MOVE_UP(int v)               { return "\033[" + std::to_string(v) + "A"; }
+LINEA_INLINE std::string CURSOR_MOVE_DOWN(int v)             { return "\033[" + std::to_string(v) + "B"; }
+LINEA_INLINE std::string CURSOR_MODE_DOWN_ROWS(int v)        { return "\033[" + std::to_string(v) + "e"; }
+LINEA_INLINE std::string CURSOR_MOVE_RIGHT(int v)            { return "\033[" + std::to_string(v) + "C"; }
+LINEA_INLINE std::string CURSOR_MOVE_LEFT(int v)             { return "\033[" + std::to_string(v) + "D"; }
+LINEA_INLINE std::string CURSOR_MOVE_START_LINE_DOWN(int v)  { return "\033[" + std::to_string(v) + "E"; }
+LINEA_INLINE std::string CURSOR_MOVE_START_LINE_UP(int v)    { return "\033[" + std::to_string(v) + "F"; }
+LINEA_INLINE std::string CURSOR_MOVE_COLUMN(int v)           { return "\033[" + std::to_string(v) + "G"; }
 
-inline constexpr char CURSOR_REQUEST_POS[]     = "\033[6n";
-inline constexpr char CURSOR_REVERSE_INDEX[]   = "\033M";
-inline constexpr char CURSOR_SAVE_POS_DEC[]    = "\0337";
-inline constexpr char CURSOR_RESTORE_POS_DEC[] = "\0338";
-inline constexpr char CURSOR_SAVE_POS_SCO[]    = "\033[s";
-inline constexpr char CURSOR_RESTORE_POS_SCO[] = "\033[u";
+LINEA_INLINE constexpr char CURSOR_REQUEST_POS[]     = "\033[6n";
+LINEA_INLINE constexpr char CURSOR_REVERSE_INDEX[]   = "\033M";
+LINEA_INLINE constexpr char CURSOR_SAVE_POS_DEC[]    = "\0337";
+LINEA_INLINE constexpr char CURSOR_RESTORE_POS_DEC[] = "\0338";
+LINEA_INLINE constexpr char CURSOR_SAVE_POS_SCO[]    = "\033[s";
+LINEA_INLINE constexpr char CURSOR_RESTORE_POS_SCO[] = "\033[u";
 
-inline constexpr char TAB_STOP_SET_COL[]       = "\033H";
-inline constexpr char TAB_STOP_CLEAR_COL[]     = "\033[g";
-inline constexpr char TAB_STOP_CLEAR_ALL[]     = "\033[3g";
-inline constexpr char TAB_STOP_MOVE_TO_NEXT[]  = "\t";
+LINEA_INLINE constexpr char TAB_STOP_SET_COL[]       = "\033H";
+LINEA_INLINE constexpr char TAB_STOP_CLEAR_COL[]     = "\033[g";
+LINEA_INLINE constexpr char TAB_STOP_CLEAR_ALL[]     = "\033[3g";
+LINEA_INLINE constexpr char TAB_STOP_MOVE_TO_NEXT[]  = "\t";
 
-inline constexpr char DEVICE_STATUS_REPORT[]        = "\033[6n";
-inline constexpr char DEVICE_PRIMARY_ATTRIBUTES[]   = "\033[c";
-inline constexpr char DEVICE_SECONDARY_ATTRIBUTES[] = "\033[>c";
+LINEA_INLINE constexpr char DEVICE_STATUS_REPORT[]        = "\033[6n";
+LINEA_INLINE constexpr char DEVICE_PRIMARY_ATTRIBUTES[]   = "\033[c";
+LINEA_INLINE constexpr char DEVICE_SECONDARY_ATTRIBUTES[] = "\033[>c";
 
-inline constexpr char TERMINAL_REQUEST_ID[]         = "\033[0c";
-inline constexpr char TERMINAL_RESET_SOFT[]         = "\033[!p";
-inline constexpr char TERMINAL_RESET_FULL[]         = "\033c";
+LINEA_INLINE constexpr char TERMINAL_REQUEST_ID[]         = "\033[0c";
+LINEA_INLINE constexpr char TERMINAL_RESET_SOFT[]         = "\033[!p";
+LINEA_INLINE constexpr char TERMINAL_RESET_FULL[]         = "\033c";
 
-inline constexpr char AUX_PORT_ON[]                 = "\033[5i";
-inline constexpr char AUX_PORT_OFF[]                = "\033[4i";
+LINEA_INLINE constexpr char AUX_PORT_ON[]                 = "\033[5i";
+LINEA_INLINE constexpr char AUX_PORT_OFF[]                = "\033[4i";
 
-inline constexpr char ERASE_IN_DISPLAY[]            = "\033[J";
-inline constexpr char ERASE_FROM_CURSOR_TO_SCREEN[] = "\033[0J";
-inline constexpr char ERASE_TO_CURSOR_FROM_SCREEN[] = "\033[1J";
-inline constexpr char ERASE_SCREEN[]                = "\033[2J";
-inline constexpr char ERASE_SAVED_LINES[]           = "\033[3J";
-inline constexpr char ERASE_FROM_CURSOR_TO_LINE[]   = "\033[K";
-inline constexpr char ERASE_TO_CURSOR_FROM_LINE[]   = "\033[1K";
-inline constexpr char ERASE_LINE[]                  = "\033[2K";
+LINEA_INLINE constexpr char ERASE_IN_DISPLAY[]            = "\033[J";
+LINEA_INLINE constexpr char ERASE_FROM_CURSOR_TO_SCREEN[] = "\033[0J";
+LINEA_INLINE constexpr char ERASE_TO_CURSOR_FROM_SCREEN[] = "\033[1J";
+LINEA_INLINE constexpr char ERASE_SCREEN[]                = "\033[2J";
+LINEA_INLINE constexpr char ERASE_SAVED_LINES[]           = "\033[3J";
+LINEA_INLINE constexpr char ERASE_FROM_CURSOR_TO_LINE[]   = "\033[K";
+LINEA_INLINE constexpr char ERASE_TO_CURSOR_FROM_LINE[]   = "\033[1K";
+LINEA_INLINE constexpr char ERASE_LINE[]                  = "\033[2K";
 
-inline constexpr char CLEAR_SCREEN_AND_HOME[]       = "\033[2J\033[H"; // Common helper to do both
+LINEA_INLINE constexpr char CLEAR_SCREEN_AND_HOME[]       = "\033[2J\033[H"; // Common helper to do both
 
-inline constexpr char SCROLL_UP_ONE[]                        = "\033[S";
-inline constexpr char SCROLL_DOWN_ONE[]                      = "\033[T";
-inline constexpr char RESET_SCROLL_REGION[]                  = "\033[r";
+LINEA_INLINE constexpr char SCROLL_UP_ONE[]                        = "\033[S";
+LINEA_INLINE constexpr char SCROLL_DOWN_ONE[]                      = "\033[T";
+LINEA_INLINE constexpr char RESET_SCROLL_REGION[]                  = "\033[r";
 
-inline std::string    SCROLL_UP(int n)                { return "\033[" + std::to_string(n) + "S"; }
-inline std::string    SCROLL_DOWN(int n)              { return "\033[" + std::to_string(n) + "T"; }
-inline std::string    SET_SCROLL_REGION(int t, int b) { return "\033[" + std::to_string(t) + ";" + std::to_string(b) + "r"; }
-inline std::string    INSERT_CHARS(int n)             { return "\033[" + std::to_string(n) + "@"; }
-inline std::string    DELETE_CHARS(int n)             { return "\033[" + std::to_string(n) + "P"; }
-inline std::string    INSERT_LINES(int n)             { return "\033[" + std::to_string(n) + "L"; }
-inline std::string    DELETE_LINES(int n)             { return "\033[" + std::to_string(n) + "M"; }
+LINEA_INLINE std::string    SCROLL_UP(int n)                { return "\033[" + std::to_string(n) + "S"; }
+LINEA_INLINE std::string    SCROLL_DOWN(int n)              { return "\033[" + std::to_string(n) + "T"; }
+LINEA_INLINE std::string    SET_SCROLL_REGION(int t, int b) { return "\033[" + std::to_string(t) + ";" + std::to_string(b) + "r"; }
+LINEA_INLINE std::string    INSERT_CHARS(int n)             { return "\033[" + std::to_string(n) + "@"; }
+LINEA_INLINE std::string    DELETE_CHARS(int n)             { return "\033[" + std::to_string(n) + "P"; }
+LINEA_INLINE std::string    INSERT_LINES(int n)             { return "\033[" + std::to_string(n) + "L"; }
+LINEA_INLINE std::string    DELETE_LINES(int n)             { return "\033[" + std::to_string(n) + "M"; }
 
-inline constexpr char RESET[]        = "\033[0m"; // 'CSI m' also works, not just 'CSI 0 m'
-inline constexpr char BOLD[]         = "\033[1m";
-inline constexpr char DIM[]          = "\033[2m";
-inline constexpr char ITALIC[]       = "\033[3m";
-inline constexpr char UNDERLINE[]    = "\033[4m";
-inline constexpr char BLINKING[]     = "\033[5m";
-inline constexpr char REVERSE[]      = "\033[7m";
-inline constexpr char INVISIBLE[]    = "\033[8m";
-inline constexpr char STRIKETHOUGH[] = "\033[9m";
+LINEA_INLINE constexpr char RESET[]        = "\033[0m"; // 'CSI m' also works, not just 'CSI 0 m'
+LINEA_INLINE constexpr char BOLD[]         = "\033[1m";
+LINEA_INLINE constexpr char DIM[]          = "\033[2m";
+LINEA_INLINE constexpr char ITALIC[]       = "\033[3m";
+LINEA_INLINE constexpr char UNDERLINE[]    = "\033[4m";
+LINEA_INLINE constexpr char BLINKING[]     = "\033[5m";
+LINEA_INLINE constexpr char REVERSE[]      = "\033[7m";
+LINEA_INLINE constexpr char INVISIBLE[]    = "\033[8m";
+LINEA_INLINE constexpr char STRIKETHOUGH[] = "\033[9m";
 
-inline constexpr char FONT_PRIMARY[] = "\033[10m";
+LINEA_INLINE constexpr char FONT_PRIMARY[] = "\033[10m";
 // Limited support
-inline constexpr char FONT_FRAKTUR[] = "\033[20m";
+LINEA_INLINE constexpr char FONT_FRAKTUR[] = "\033[20m";
 
 // Disables BOLD on some terminals
-inline constexpr char DOUBLE_UNDERLINE[]   = "\033[21m";
+LINEA_INLINE constexpr char DOUBLE_UNDERLINE[]   = "\033[21m";
 
-inline constexpr char BOLD_RESET[]         = "\033[22m";
-inline constexpr char DIM_RESET[]          = "\033[22m";
-inline constexpr char ITALIC_RESET[]       = "\033[23m";
-inline constexpr char UNDERLINE_RESET[]    = "\033[24m";
-inline constexpr char BLINKING_RESET[]     = "\033[25m";
-inline constexpr char REVERSE_RESET[]      = "\033[27m";
-inline constexpr char INVISIBLE_RESET[]    = "\033[28m";
-inline constexpr char STRIKETHOUGH_RESET[] = "\033[29m";
+LINEA_INLINE constexpr char BOLD_RESET[]         = "\033[22m";
+LINEA_INLINE constexpr char DIM_RESET[]          = "\033[22m";
+LINEA_INLINE constexpr char ITALIC_RESET[]       = "\033[23m";
+LINEA_INLINE constexpr char UNDERLINE_RESET[]    = "\033[24m";
+LINEA_INLINE constexpr char BLINKING_RESET[]     = "\033[25m";
+LINEA_INLINE constexpr char REVERSE_RESET[]      = "\033[27m";
+LINEA_INLINE constexpr char INVISIBLE_RESET[]    = "\033[28m";
+LINEA_INLINE constexpr char STRIKETHOUGH_RESET[] = "\033[29m";
 
 // ITU T.61 and T.416, not known to be used on terminals
-inline constexpr char PROPORTIONAL_SPACING[] = "\033[26m";
+LINEA_INLINE constexpr char PROPORTIONAL_SPACING[] = "\033[26m";
 
-inline constexpr char FG_BLACK[]   = "\033[30m";
-inline constexpr char FG_RED[]     = "\033[31m";
-inline constexpr char FG_GREEN[]   = "\033[32m";
-inline constexpr char FG_YELLOW[]  = "\033[33m";
-inline constexpr char FG_BLUE[]    = "\033[34m";
-inline constexpr char FG_MAGENTA[] = "\033[35m";
-inline constexpr char FG_CYAN[]    = "\033[36m";
-inline constexpr char FG_WHITE[]   = "\033[37m";
-inline constexpr char FG_DEFAULT[] = "\033[39m";
+LINEA_INLINE constexpr char FG_BLACK[]   = "\033[30m";
+LINEA_INLINE constexpr char FG_RED[]     = "\033[31m";
+LINEA_INLINE constexpr char FG_GREEN[]   = "\033[32m";
+LINEA_INLINE constexpr char FG_YELLOW[]  = "\033[33m";
+LINEA_INLINE constexpr char FG_BLUE[]    = "\033[34m";
+LINEA_INLINE constexpr char FG_MAGENTA[] = "\033[35m";
+LINEA_INLINE constexpr char FG_CYAN[]    = "\033[36m";
+LINEA_INLINE constexpr char FG_WHITE[]   = "\033[37m";
+LINEA_INLINE constexpr char FG_DEFAULT[] = "\033[39m";
 
-inline std::string FG_CUSTOM_256(unsigned v)                         { return "\033[38;5;" + __detail::u8(v) + "m"; }
-inline std::string FG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[38;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
+LINEA_INLINE std::string FG_CUSTOM_256(unsigned v)                         { return "\033[38;5;" + __detail::u8(v) + "m"; }
+LINEA_INLINE std::string FG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[38;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
 
-inline constexpr char BG_BLACK[]   = "\033[40m";
-inline constexpr char BG_RED[]     = "\033[41m";
-inline constexpr char BG_GREEN[]   = "\033[42m";
-inline constexpr char BG_YELLOW[]  = "\033[43m";
-inline constexpr char BG_BLUE[]    = "\033[44m";
-inline constexpr char BG_MAGENTA[] = "\033[45m";
-inline constexpr char BG_CYAN[]    = "\033[46m";
-inline constexpr char BG_WHITE[]   = "\033[47m";
-inline constexpr char BG_DEFAULT[] = "\033[49m";
+LINEA_INLINE constexpr char BG_BLACK[]   = "\033[40m";
+LINEA_INLINE constexpr char BG_RED[]     = "\033[41m";
+LINEA_INLINE constexpr char BG_GREEN[]   = "\033[42m";
+LINEA_INLINE constexpr char BG_YELLOW[]  = "\033[43m";
+LINEA_INLINE constexpr char BG_BLUE[]    = "\033[44m";
+LINEA_INLINE constexpr char BG_MAGENTA[] = "\033[45m";
+LINEA_INLINE constexpr char BG_CYAN[]    = "\033[46m";
+LINEA_INLINE constexpr char BG_WHITE[]   = "\033[47m";
+LINEA_INLINE constexpr char BG_DEFAULT[] = "\033[49m";
 
-inline std::string BG_CUSTOM_256(unsigned v)                         { return "\033[48;5;" + __detail::u8(v) + "m"; }
-inline std::string BG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[48;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
+LINEA_INLINE std::string BG_CUSTOM_256(unsigned v)                         { return "\033[48;5;" + __detail::u8(v) + "m"; }
+LINEA_INLINE std::string BG_CUSTOM_RGB(unsigned r, unsigned g, unsigned b) { return "\033[48;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
 
-inline constexpr char FRAMED[]               = "\033[51m";
-inline constexpr char ENCIRCLED[]            = "\033[52m";
-inline constexpr char OVERLINE[]             = "\033[53m";
-inline constexpr char FRAMED_ENCIRCLED_OFF[] = "\033[54m";
-inline constexpr char OVERLINE_OFF[]         = "\033[55m";
+LINEA_INLINE constexpr char FRAMED[]               = "\033[51m";
+LINEA_INLINE constexpr char ENCIRCLED[]            = "\033[52m";
+LINEA_INLINE constexpr char OVERLINE[]             = "\033[53m";
+LINEA_INLINE constexpr char FRAMED_ENCIRCLED_OFF[] = "\033[54m";
+LINEA_INLINE constexpr char OVERLINE_OFF[]         = "\033[55m";
 
 // Not in standard; implemented in Kitty, VTE, mintty, and iTerm2
-inline std::string UNDERLINE_COLOR_256(unsigned v)                         { return "\033[58;5;" + __detail::u8(v) + "m"; }
-inline std::string UNDERLINE_COLOR_RGB(unsigned r, unsigned g, unsigned b) { return "\033[58;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
+LINEA_INLINE std::string UNDERLINE_COLOR_256(unsigned v)                         { return "\033[58;5;" + __detail::u8(v) + "m"; }
+LINEA_INLINE std::string UNDERLINE_COLOR_RGB(unsigned r, unsigned g, unsigned b) { return "\033[58;2;" + __detail::rgbConstruct(r,g,b) + "m"; }
 
-inline constexpr char UNDERLINE_COLOR_DEFAULT[] = "\033[59m";
+LINEA_INLINE constexpr char UNDERLINE_COLOR_DEFAULT[] = "\033[59m";
 
 // Rarely supported.
 // Underline doubles as 'or right side line', overline being left side
 // Double of these are double side lines
-inline constexpr char IDEOGRAM_UNDERLINE[]        = "\033[60m";
-inline constexpr char IDEOGRAM_DOUBLE_UNDERLINE[] = "\033[61m";
-inline constexpr char IDEOGRAM_OVERLINE[]         = "\033[62m";
-inline constexpr char IDEOGRAM_DOUBLE_OVERLINE[]  = "\033[63m";
-inline constexpr char IDEOGRAM_STRESS_MARKING[]   = "\033[64m";
-inline constexpr char IDEOGRAM_RESET[]            = "\033[65m";
+LINEA_INLINE constexpr char IDEOGRAM_UNDERLINE[]        = "\033[60m";
+LINEA_INLINE constexpr char IDEOGRAM_DOUBLE_UNDERLINE[] = "\033[61m";
+LINEA_INLINE constexpr char IDEOGRAM_OVERLINE[]         = "\033[62m";
+LINEA_INLINE constexpr char IDEOGRAM_DOUBLE_OVERLINE[]  = "\033[63m";
+LINEA_INLINE constexpr char IDEOGRAM_STRESS_MARKING[]   = "\033[64m";
+LINEA_INLINE constexpr char IDEOGRAM_RESET[]            = "\033[65m";
 
 // Only in mintty
-inline constexpr char SUPERSCRIPT[]       = "\033[73m";
-inline constexpr char SUBSCRIPT[]         = "\033[74m";
-inline constexpr char SUPERSCRIPT_RESET[] = "\033[75m"; // Included twice for ergo
-inline constexpr char SUBSCRIPT_RESET[]   = "\033[75m";
+LINEA_INLINE constexpr char SUPERSCRIPT[]       = "\033[73m";
+LINEA_INLINE constexpr char SUBSCRIPT[]         = "\033[74m";
+LINEA_INLINE constexpr char SUPERSCRIPT_RESET[] = "\033[75m"; // Included twice for ergo
+LINEA_INLINE constexpr char SUBSCRIPT_RESET[]   = "\033[75m";
 
 // Technically these and bright_ variants are not in standard,
 // but often supported (originally by aixterm).
-inline constexpr char FG_BLACK_BRIGHT[]   = "\033[90m";
-inline constexpr char FG_RED_BRIGHT[]     = "\033[91m";
-inline constexpr char FG_GREEN_BRIGHT[]   = "\033[92m";
-inline constexpr char FG_YELLOW_BRIGHT[]  = "\033[93m";
-inline constexpr char FG_BLUE_BRIGHT[]    = "\033[94m";
-inline constexpr char FG_MAGENTA_BRIGHT[] = "\033[95m";
-inline constexpr char FG_CYAN_BRIGHT[]    = "\033[96m";
-inline constexpr char FG_WHITE_BRIGHT[]   = "\033[97m";
+LINEA_INLINE constexpr char FG_BLACK_BRIGHT[]   = "\033[90m";
+LINEA_INLINE constexpr char FG_RED_BRIGHT[]     = "\033[91m";
+LINEA_INLINE constexpr char FG_GREEN_BRIGHT[]   = "\033[92m";
+LINEA_INLINE constexpr char FG_YELLOW_BRIGHT[]  = "\033[93m";
+LINEA_INLINE constexpr char FG_BLUE_BRIGHT[]    = "\033[94m";
+LINEA_INLINE constexpr char FG_MAGENTA_BRIGHT[] = "\033[95m";
+LINEA_INLINE constexpr char FG_CYAN_BRIGHT[]    = "\033[96m";
+LINEA_INLINE constexpr char FG_WHITE_BRIGHT[]   = "\033[97m";
 
-inline constexpr char BG_BLACK_BRIGHT[]   = "\033[100m";
-inline constexpr char BG_RED_BRIGHT[]     = "\033[101m";
-inline constexpr char BG_GREEN_BRIGHT[]   = "\033[102m";
-inline constexpr char BG_YELLOW_BRIGHT[]  = "\033[103m";
-inline constexpr char BG_BLUE_BRIGHT[]    = "\033[104m";
-inline constexpr char BG_MAGENTA_BRIGHT[] = "\033[105m";
-inline constexpr char BG_CYAN_BRIGHT[]    = "\033[106m";
-inline constexpr char BG_WHITE_BRIGHT[]   = "\033[107m";
+LINEA_INLINE constexpr char BG_BLACK_BRIGHT[]   = "\033[100m";
+LINEA_INLINE constexpr char BG_RED_BRIGHT[]     = "\033[101m";
+LINEA_INLINE constexpr char BG_GREEN_BRIGHT[]   = "\033[102m";
+LINEA_INLINE constexpr char BG_YELLOW_BRIGHT[]  = "\033[103m";
+LINEA_INLINE constexpr char BG_BLUE_BRIGHT[]    = "\033[104m";
+LINEA_INLINE constexpr char BG_MAGENTA_BRIGHT[] = "\033[105m";
+LINEA_INLINE constexpr char BG_CYAN_BRIGHT[]    = "\033[106m";
+LINEA_INLINE constexpr char BG_WHITE_BRIGHT[]   = "\033[107m";
 
 // Legacy modes (mostly unsupported now)
-inline constexpr char MODE_40X25_MONO[]       = "\033[=0h";
-inline constexpr char MODE_40X25_COLOR[]      = "\033[=1h";
-inline constexpr char MODE_80X25_MONO[]       = "\033[=2h";
-inline constexpr char MODE_80X25_COLOR[]      = "\033[=3h";
-inline constexpr char MODE_320X200_4COLOR[]   = "\033[=4h";
-inline constexpr char MODE_320X200_MONO[]     = "\033[=5h";
-inline constexpr char MODE_640X200_MONO[]     = "\033[=6h";
-inline constexpr char MODE_LINE_WRAPPING[]    = "\033[=7h";
-inline constexpr char MODE_320X200_COLOR[]    = "\033[=13h";
-inline constexpr char MODE_640X200_16COLOR[]  = "\033[=14h";
-inline constexpr char MODE_640X350_2MONO[]    = "\033[=15h";
-inline constexpr char MODE_640X350_16COLOR[]  = "\033[=16h";
-inline constexpr char MODE_640X480_2MONO[]    = "\033[=17h";
-inline constexpr char MODE_640X480_16COLOR[]  = "\033[=18h";
-inline constexpr char MODE_320X200_256COLOR[] = "\033[=19h";
+LINEA_INLINE constexpr char MODE_40X25_MONO[]       = "\033[=0h";
+LINEA_INLINE constexpr char MODE_40X25_COLOR[]      = "\033[=1h";
+LINEA_INLINE constexpr char MODE_80X25_MONO[]       = "\033[=2h";
+LINEA_INLINE constexpr char MODE_80X25_COLOR[]      = "\033[=3h";
+LINEA_INLINE constexpr char MODE_320X200_4COLOR[]   = "\033[=4h";
+LINEA_INLINE constexpr char MODE_320X200_MONO[]     = "\033[=5h";
+LINEA_INLINE constexpr char MODE_640X200_MONO[]     = "\033[=6h";
+LINEA_INLINE constexpr char MODE_LINE_WRAPPING[]    = "\033[=7h";
+LINEA_INLINE constexpr char MODE_320X200_COLOR[]    = "\033[=13h";
+LINEA_INLINE constexpr char MODE_640X200_16COLOR[]  = "\033[=14h";
+LINEA_INLINE constexpr char MODE_640X350_2MONO[]    = "\033[=15h";
+LINEA_INLINE constexpr char MODE_640X350_16COLOR[]  = "\033[=16h";
+LINEA_INLINE constexpr char MODE_640X480_2MONO[]    = "\033[=17h";
+LINEA_INLINE constexpr char MODE_640X480_16COLOR[]  = "\033[=18h";
+LINEA_INLINE constexpr char MODE_320X200_256COLOR[] = "\033[=19h";
 
-inline constexpr char MODE_40X25_MONO_RESET[]       = "\033[=0l";
-inline constexpr char MODE_40X25_COLOR_RESET[]      = "\033[=1l";
-inline constexpr char MODE_80X25_MONO_RESET[]       = "\033[=2l";
-inline constexpr char MODE_80X25_COLOR_RESET[]      = "\033[=3l";
-inline constexpr char MODE_320X200_4COLOR_RESET[]   = "\033[=4l";
-inline constexpr char MODE_320X200_MONO_RESET[]     = "\033[=5l";
-inline constexpr char MODE_640X200_MONO_RESET[]     = "\033[=6l";
-inline constexpr char MODE_LINE_WRAPPING_RESET[]    = "\033[=7l";
-inline constexpr char MODE_320X200_COLOR_RESET[]    = "\033[=13l";
-inline constexpr char MODE_640X200_16COLOR_RESET[]  = "\033[=14l";
-inline constexpr char MODE_640X350_2MONO_RESET[]    = "\033[=15l";
-inline constexpr char MODE_640X350_16COLOR_RESET[]  = "\033[=16l";
-inline constexpr char MODE_640X480_2MONO_RESET[]    = "\033[=17l";
-inline constexpr char MODE_640X480_16COLOR_RESET[]  = "\033[=18l";
-inline constexpr char MODE_320X200_256COLOR_RESET[] = "\033[=19l";
+LINEA_INLINE constexpr char MODE_40X25_MONO_RESET[]       = "\033[=0l";
+LINEA_INLINE constexpr char MODE_40X25_COLOR_RESET[]      = "\033[=1l";
+LINEA_INLINE constexpr char MODE_80X25_MONO_RESET[]       = "\033[=2l";
+LINEA_INLINE constexpr char MODE_80X25_COLOR_RESET[]      = "\033[=3l";
+LINEA_INLINE constexpr char MODE_320X200_4COLOR_RESET[]   = "\033[=4l";
+LINEA_INLINE constexpr char MODE_320X200_MONO_RESET[]     = "\033[=5l";
+LINEA_INLINE constexpr char MODE_640X200_MONO_RESET[]     = "\033[=6l";
+LINEA_INLINE constexpr char MODE_LINE_WRAPPING_RESET[]    = "\033[=7l";
+LINEA_INLINE constexpr char MODE_320X200_COLOR_RESET[]    = "\033[=13l";
+LINEA_INLINE constexpr char MODE_640X200_16COLOR_RESET[]  = "\033[=14l";
+LINEA_INLINE constexpr char MODE_640X350_2MONO_RESET[]    = "\033[=15l";
+LINEA_INLINE constexpr char MODE_640X350_16COLOR_RESET[]  = "\033[=16l";
+LINEA_INLINE constexpr char MODE_640X480_2MONO_RESET[]    = "\033[=17l";
+LINEA_INLINE constexpr char MODE_640X480_16COLOR_RESET[]  = "\033[=18l";
+LINEA_INLINE constexpr char MODE_320X200_256COLOR_RESET[] = "\033[=19l";
 
-inline constexpr char CURSOR_STYLE_SET[]                = "\033[ q";
-inline constexpr char CURSOR_STYLE_BLINKING_BLOCK[]     = "\033[1 q";
-inline constexpr char CURSOR_STYLE_STEADY_BLOCK[]       = "\033[2 q";
-inline constexpr char CURSOR_STYLE_BLINKING_UNDERLINE[] = "\033[3 q";
-inline constexpr char CURSOR_STYLE_STEADY_UNDERLINE[]   = "\033[4 q";
-inline constexpr char CURSOR_STYLE_BLINKING_BAR[]       = "\033[5 q";
-inline constexpr char CURSOR_STYLE_STEADY_BAR[]         = "\033[6 q";
+LINEA_INLINE constexpr char CURSOR_STYLE_SET[]                = "\033[ q";
+LINEA_INLINE constexpr char CURSOR_STYLE_BLINKING_BLOCK[]     = "\033[1 q";
+LINEA_INLINE constexpr char CURSOR_STYLE_STEADY_BLOCK[]       = "\033[2 q";
+LINEA_INLINE constexpr char CURSOR_STYLE_BLINKING_UNDERLINE[] = "\033[3 q";
+LINEA_INLINE constexpr char CURSOR_STYLE_STEADY_UNDERLINE[]   = "\033[4 q";
+LINEA_INLINE constexpr char CURSOR_STYLE_BLINKING_BAR[]       = "\033[5 q";
+LINEA_INLINE constexpr char CURSOR_STYLE_STEADY_BAR[]         = "\033[6 q";
 
 /**
  * @brief
@@ -1375,54 +1466,54 @@ inline constexpr char CURSOR_STYLE_STEADY_BAR[]         = "\033[6 q";
  * ```
  * Becomes a box with 'ESC ( 0' active
  */
-inline constexpr char CHAR_SET_LINE_DRAWING[] = "\033(0";
-inline constexpr char CHAR_SET_ASCII[]        = "\033(B";
+LINEA_INLINE constexpr char CHAR_SET_LINE_DRAWING[] = "\033(0";
+LINEA_INLINE constexpr char CHAR_SET_ASCII[]        = "\033(B";
 
 // "While these modes may be supported by the most terminals, some may not work in multiplexers like tmux."
 // PMODE = Private Mode
-inline constexpr char PMODE_CURSOR_KEYS_APPLICATION[]      = "\033[?1h";
-inline constexpr char PMODE_CURSOR_KEYS_NORMAL[]           = "\033[?1l";
-inline constexpr char PMODE_WRAP_ENABLE[]                  = "\033[?7h";
-inline constexpr char PMODE_WRAP_DISABLE[]                 = "\033[?7l";
-inline constexpr char PMODE_CURSOR_BLINKING[]              = "\033[?12h";
-inline constexpr char PMODE_CURSOR_STEADY[]                = "\033[?12l";
-inline constexpr char PMODE_CURSOR_VISIBLE[]               = "\033[?25h";
-inline constexpr char PMODE_CURSOR_INVISIBLE[]             = "\033[?25l";
-inline constexpr char PMODE_SAVE_SCREEN[]                  = "\033[?47h";
-inline constexpr char PMODE_RESTORE_SCREEN[]               = "\033[?47l";
-inline constexpr char PMODE_MOUSE_ENABLE_BASIC[]           = "\033[?1000h";
-inline constexpr char PMODE_MOUSE_DISABLE[]                = "\033[?1000l";
-inline constexpr char PMODE_MOUSE_ENABLE_BUTTON_EVENT[]    = "\033[?1002h";
-inline constexpr char PMODE_MOUSE_DISABLE_BUTTON_EVENT[]   = "\033[?1002l";
-inline constexpr char PMODE_MOUSE_ENABLE_BUTTON_DRAG[]     = "\033[?1003h";
-inline constexpr char PMODE_MOUSE_DISABLE_BUTTON_DRAG[]    = "\033[?1003l";
-inline constexpr char PMODE_ENABLE_REPORTING_FOCUS[]       = "\033[?1004h";
-inline constexpr char PMODE_DISABLE_REPORTING_FOCUS[]      = "\033[?1004l";
-inline constexpr char PMODE_MOUSE_MODE_UTF8[]              = "\033[?1005h";
-inline constexpr char PMODE_SGR_EXTENDED_MODE[]            = "\033[?1006h";
-inline constexpr char PMODE_MOUSE_ENABLE_URXVT_EXTENDED[]  = "\033[?1015h";
-inline constexpr char PMODE_MOUSE_DISABLE_URXVT_EXTENDED[] = "\033[?1015l";
-inline constexpr char PMODE_ENABLE_ALT_BUFFER_VAR[]        = "\033[?1047h";
-inline constexpr char PMODE_SAVE_CURSOR[]                  = "\033[?1048h";
-inline constexpr char PMODE_RESTORE_CURSOR[]               = "\033[?1048l";
-inline constexpr char PMODE_ENABLE_ALT_BUFFER[]            = "\033[?1049h";
-inline constexpr char PMODE_DISABLE_ALT_BUFFER[]           = "\033[?1049l";
-inline constexpr char PMODE_BRACKETED_PASTE_ON[]           = "\033[?2004h";
-inline constexpr char PMODE_BRACKETED_PASTE_OFF[]          = "\033[?2004l"; // Disables ESC [200~ and ESC [201~ surrounding paste
+LINEA_INLINE constexpr char PMODE_CURSOR_KEYS_APPLICATION[]      = "\033[?1h";
+LINEA_INLINE constexpr char PMODE_CURSOR_KEYS_NORMAL[]           = "\033[?1l";
+LINEA_INLINE constexpr char PMODE_WRAP_ENABLE[]                  = "\033[?7h";
+LINEA_INLINE constexpr char PMODE_WRAP_DISABLE[]                 = "\033[?7l";
+LINEA_INLINE constexpr char PMODE_CURSOR_BLINKING[]              = "\033[?12h";
+LINEA_INLINE constexpr char PMODE_CURSOR_STEADY[]                = "\033[?12l";
+LINEA_INLINE constexpr char PMODE_CURSOR_VISIBLE[]               = "\033[?25h";
+LINEA_INLINE constexpr char PMODE_CURSOR_INVISIBLE[]             = "\033[?25l";
+LINEA_INLINE constexpr char PMODE_SAVE_SCREEN[]                  = "\033[?47h";
+LINEA_INLINE constexpr char PMODE_RESTORE_SCREEN[]               = "\033[?47l";
+LINEA_INLINE constexpr char PMODE_MOUSE_ENABLE_BASIC[]           = "\033[?1000h";
+LINEA_INLINE constexpr char PMODE_MOUSE_DISABLE[]                = "\033[?1000l";
+LINEA_INLINE constexpr char PMODE_MOUSE_ENABLE_BUTTON_EVENT[]    = "\033[?1002h";
+LINEA_INLINE constexpr char PMODE_MOUSE_DISABLE_BUTTON_EVENT[]   = "\033[?1002l";
+LINEA_INLINE constexpr char PMODE_MOUSE_ENABLE_BUTTON_DRAG[]     = "\033[?1003h";
+LINEA_INLINE constexpr char PMODE_MOUSE_DISABLE_BUTTON_DRAG[]    = "\033[?1003l";
+LINEA_INLINE constexpr char PMODE_ENABLE_REPORTING_FOCUS[]       = "\033[?1004h";
+LINEA_INLINE constexpr char PMODE_DISABLE_REPORTING_FOCUS[]      = "\033[?1004l";
+LINEA_INLINE constexpr char PMODE_MOUSE_MODE_UTF8[]              = "\033[?1005h";
+LINEA_INLINE constexpr char PMODE_SGR_EXTENDED_MODE[]            = "\033[?1006h";
+LINEA_INLINE constexpr char PMODE_MOUSE_ENABLE_URXVT_EXTENDED[]  = "\033[?1015h";
+LINEA_INLINE constexpr char PMODE_MOUSE_DISABLE_URXVT_EXTENDED[] = "\033[?1015l";
+LINEA_INLINE constexpr char PMODE_ENABLE_ALT_BUFFER_VAR[]        = "\033[?1047h";
+LINEA_INLINE constexpr char PMODE_SAVE_CURSOR[]                  = "\033[?1048h";
+LINEA_INLINE constexpr char PMODE_RESTORE_CURSOR[]               = "\033[?1048l";
+LINEA_INLINE constexpr char PMODE_ENABLE_ALT_BUFFER[]            = "\033[?1049h";
+LINEA_INLINE constexpr char PMODE_DISABLE_ALT_BUFFER[]           = "\033[?1049l";
+LINEA_INLINE constexpr char PMODE_BRACKETED_PASTE_ON[]           = "\033[?2004h";
+LINEA_INLINE constexpr char PMODE_BRACKETED_PASTE_OFF[]          = "\033[?2004l"; // Disables ESC [200~ and ESC [201~ surrounding paste
 
 // 0Ft Sequences (ESC followed by SP (0x22, space))
 // Not common in the slightest, basically dead
-inline constexpr char ANNOUNCE_CODE_STRUCTURE_6[]      = "\033 F";
-inline constexpr char SEND_7BIT_C1_CONTROL_CHARACTER[] = "\033 F";
-inline constexpr char ANNOUNCE_CODE_STRUCTURE_7[]      = "\033 G";
-inline constexpr char SEND_8BIT_C1_CONTROL_CHARACTER[] = "\033 G";
+LINEA_INLINE constexpr char ANNOUNCE_CODE_STRUCTURE_6[]      = "\033 F";
+LINEA_INLINE constexpr char SEND_7BIT_C1_CONTROL_CHARACTER[] = "\033 F";
+LINEA_INLINE constexpr char ANNOUNCE_CODE_STRUCTURE_7[]      = "\033 G";
+LINEA_INLINE constexpr char SEND_8BIT_C1_CONTROL_CHARACTER[] = "\033 G";
 
 // 3Fp (private-use) sequences (common but not guaranteed)
-inline constexpr char DOUBLE_HEIGHT_TOP[]     = "\033#3";
-inline constexpr char DOUBLE_HEIGHT_BOTTOM[]  = "\033#4";
-inline constexpr char SINGLE_WIDTH[]          = "\033#5";
-inline constexpr char DOUBLE_WIDTH[]          = "\033#6";
-inline constexpr char SCREEN_ALIGNMENT_TEST[] = "\033#8";
+LINEA_INLINE constexpr char DOUBLE_HEIGHT_TOP[]     = "\033#3";
+LINEA_INLINE constexpr char DOUBLE_HEIGHT_BOTTOM[]  = "\033#4";
+LINEA_INLINE constexpr char SINGLE_WIDTH[]          = "\033#5";
+LINEA_INLINE constexpr char DOUBLE_WIDTH[]          = "\033#6";
+LINEA_INLINE constexpr char SCREEN_ALIGNMENT_TEST[] = "\033#8";
 
 // OSC
 inline std::string OSC_SET_TITLE(const std::string& title) {
@@ -1465,14 +1556,14 @@ inline std::string OSC_QUERY_CURSOR_COLOR(bool st = false) {
 inline std::string OSC_SET_CLIPBOARD(const std::string& base64, char target = 'c', bool st = false) {
     return __detail::oscCommand("52;" + std::string(1, target) + ";" + base64, st);
 }
-inline constexpr char OSC_RESET_PALETTE[]      = "\033]104\033\\";
-inline constexpr char OSC_RESET_DEFAULT_FG[]   = "\033]110\033\\";
-inline constexpr char OSC_RESET_DEFAULT_BG[]   = "\033]111\033\\";
-inline constexpr char OSC_RESET_CURSOR_COLOR[] = "\033]112\033\\";
-inline constexpr char OSC_PROMPT_START[]       = "\033]133;A\007";
-inline constexpr char OSC_PROMPT_END[]         = "\033]133;B\007";
-inline constexpr char OSC_COMMAND_START[]      = "\033]133;C\007";
-inline constexpr char OSC_COMMAND_END[]        = "\033]133;D\007";
+LINEA_INLINE constexpr char OSC_RESET_PALETTE[]      = "\033]104\033\\";
+LINEA_INLINE constexpr char OSC_RESET_DEFAULT_FG[]   = "\033]110\033\\";
+LINEA_INLINE constexpr char OSC_RESET_DEFAULT_BG[]   = "\033]111\033\\";
+LINEA_INLINE constexpr char OSC_RESET_CURSOR_COLOR[] = "\033]112\033\\";
+LINEA_INLINE constexpr char OSC_PROMPT_START[]       = "\033]133;A\007";
+LINEA_INLINE constexpr char OSC_PROMPT_END[]         = "\033]133;B\007";
+LINEA_INLINE constexpr char OSC_COMMAND_START[]      = "\033]133;C\007";
+LINEA_INLINE constexpr char OSC_COMMAND_END[]        = "\033]133;D\007";
 inline std::string OSC_COMMAND_START_WITH_META(const std::string& meta, bool st = false) {
     return __detail::oscCommand("133;C;" + meta, st);
 }
@@ -1496,8 +1587,8 @@ inline std::string OSC_ITERM_SET_VAR(const std::string& name, const std::string&
 }
 
 // xterm extensions
-inline constexpr char XTERM_WINDOW_GET_SIZE_PX[]    = "\033[14t";
-inline constexpr char XTERM_TERMINAL_GET_SIZE_CHR[] = "\033[18t";
+LINEA_INLINE constexpr char XTERM_WINDOW_GET_SIZE_PX[]    = "\033[14t";
+LINEA_INLINE constexpr char XTERM_TERMINAL_GET_SIZE_CHR[] = "\033[18t";
 
 // Keyboard strings
 namespace KBD {
@@ -1857,12 +1948,12 @@ constexpr __detail::Item ALT_SLASH_NUMPAD           = __detail::make_item("0;74"
 
 // Almost no modern terminals support this.
 inline ::linea::__detail::string_view MAP_KEY(KBD::__detail::Item key, const std::string& str) {
-    return "\033[" + std::string(key.value()) + ";" + "\"" + str + "\"" + "p";
+    return "\033[" + __detail::string_view_str(key.value()) + ";" + "\"" + str + "\"" + "p";
 }
 
 // Almost no modern terminals support this.
 inline ::linea::__detail::string_view MAP_KEY(KBD::__detail::Item key, int keycode) {
-    return "\033[" + std::string(key.value()) + ";" + std::to_string(keycode) + "p";
+    return "\033[" + __detail::string_view_str(key.value()) + ";" + std::to_string(keycode) + "p";
 }
 
 // Almost no modern terminals support this.
@@ -1880,7 +1971,7 @@ inline ::linea::__detail::string_view MAP_KEY(KBD::__detail::Item key, const std
         }
     }
     str += ';';
-    return "\033[" + std::string(key.value()) + str + 'p';
+    return "\033[" + __detail::string_view_str(key.value()) + str + 'p';
 }
 
 } // namespace ANSI
@@ -1899,7 +1990,9 @@ struct CLIError : std::runtime_error {
     CLIError(ErrorKind k, std::string msg) : std::runtime_error(std::move(msg)), kind(k) {}
 
     __detail::string_view message() const {
-        return "\033[31m[Error]:\033[0m " + std::string(std::runtime_error::what());
+        std::string message = "\033[31m[Error]:\033[0m ";
+        message += std::string(std::runtime_error::what());
+        return message;
     }
 };
 
@@ -2194,8 +2287,8 @@ public:
             throw CLIError(ErrorKind::InvalidValue, "Invalid value for --" + long_name + ": \"" + str + "\"");
         }
 
-        for (auto& [fn, msg] : validators) {
-            if (!fn(tmp)) throw CLIError(ErrorKind::InvalidValue, msg);
+        for (auto& validator : validators) {
+            if (!validator.first(tmp)) throw CLIError(ErrorKind::InvalidValue, validator.second);
         }
 
         set_value(tmp);
@@ -2210,7 +2303,7 @@ public:
     }
 
     __detail::any get_value() const override {
-        return target ? *target : value;
+        return target ? __detail::any(*target) : __detail::any(value);
     }
 
 private:
@@ -2542,8 +2635,8 @@ public:
      */
     template <typename Fn>
     Command& run(Fn fn) {
-        action = [fn](const Args& args) -> std::future<void> {
-            return invoke(fn, args);
+        action = [this, fn](const Args& args) -> std::future<void> {
+            return this->invoke(fn, args);
         };
         return *this;
     }
@@ -2612,7 +2705,7 @@ private:
 
     template <typename T>
     T& register_option(std::unique_ptr<T> opt) {
-        static_assert(std::is_base_of_v<OptionBase, T>);
+        static_assert(std::is_base_of<OptionBase, T>::value);
 
         T* ptr = opt.get();
 
@@ -2631,7 +2724,7 @@ private:
     auto& register_positional(const std::string& name, std::unique_ptr<Option<T>> opt) {
         Option<T>* ptr = opt.get();
         positionals.push_back({name, ptr, false});
-        optionals.push_back(std::move(opt));
+        options.push_back(std::move(opt));
         return *ptr;
     }
 
@@ -2662,6 +2755,7 @@ private:
         return __detail::argument_resolver<T, Args>::resolve(args);
     }
 
+    /*
     template <typename Fn>
     std::future<void> invoke(Fn& fn, const Args& args) {
         if constexpr (__detail::is_invocable_v<Fn, const Args&>) {
@@ -2685,6 +2779,54 @@ private:
             fn(resolve<T>(args));
             return __detail::async_deferred();
         }
+    }
+    */
+
+    template <typename Fn>
+    typename std::enable_if<__detail::is_future_v<typename __detail::invoke_result_t<Fn, const Args&>>, std::future<void>>::type
+    invoke_with_args(Fn& fn, const Args& args) {
+        return fn(args);
+    }
+
+    template <typename Fn>
+    typename std::enable_if<!__detail::is_future_v<typename __detail::invoke_result_t<Fn, const Args&>>, std::future<void>>::type
+    invoke_with_args(Fn& fn, const Args& args) {
+        fn(args);
+        return __detail::async_deferred();
+    }
+
+    template <typename Fn>
+    typename std::enable_if<__detail::is_future_v<typename __detail::invoke_result<Fn>::type>, std::future<void>>::type
+    invoke_without_args(Fn& fn) {
+        return fn();
+    }
+
+    template <typename Fn>
+    typename std::enable_if<!__detail::is_future_v<typename __detail::invoke_result<Fn>::type>, std::future<void>>::type
+    invoke_without_args(Fn& fn) {
+        fn();
+        return __detail::async_deferred();
+    }
+
+    template <typename Fn>
+    typename std::enable_if<__detail::is_invocable_v<Fn, const Args&>, std::future<void>>::type
+    invoke(Fn& fn, const Args& args) {
+        return invoke_with_args(fn, args);
+    }
+
+    template <typename Fn>
+    typename std::enable_if<!__detail::is_invocable_v<Fn, const Args&> && __detail::is_invocable_v<Fn>, std::future<void>>::type
+    invoke(Fn& fn, const Args& args) {
+        return invoke_without_args(fn);
+    }
+
+    template <typename Fn>
+    typename std::enable_if<!__detail::is_invocable_v<Fn, const Args&> && !__detail::is_invocable_v<Fn>, std::future<void>>::type
+    invoke(Fn& fn, const Args& args) {
+        using T = typename __detail::function_arg_t<Fn>::type;
+
+        fn(resolve<T>(args));
+        return __detail::async_deferred();
     }
 };
 
@@ -2755,7 +2897,7 @@ public:
         cargs.reserve(args.size() + 1);
 
         for (auto& arg : args) {
-            cargs.push_back(arg.data());
+            cargs.push_back(&arg[0]);
         }
 
         cargs.push_back(nullptr);
@@ -2771,7 +2913,7 @@ public:
         cargs.reserve(args.size() + 1);
 
         for (auto& arg : args) {
-            cargs.push_back(arg.data());
+            cargs.push_back(&arg[0]);
         }
 
         cargs.push_back(nullptr);
@@ -3100,7 +3242,7 @@ public:
         size_t filled = static_cast<size_t>(ratio * width_);
 
         std::string raw = buildRawBar(filled);
-        int percent = std::clamp(static_cast<int>(ratio * 100), 0, 100);
+        int percent = linea::__detail::clamp(static_cast<int>(ratio * 100), 0, 100);
         overlayPercent(raw, percent);
         std::string bar = applyColor(raw);
 

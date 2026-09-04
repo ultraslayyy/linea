@@ -1,3 +1,3 @@
 # Linea
 
-C++ CLI library for C++17 and up (possible 14 or even 11 support later).
+C++ CLI library for C++14 and up (even possible 11 support later).
