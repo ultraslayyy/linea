@@ -130,34 +130,6 @@
  * - Middleware
  */
 
-#include <algorithm>
-#include <any>
-#include <chrono>
-#include <concepts>
-#include <filesystem>
-#include <functional>
-#include <future>
-#include <iomanip>
-#include <iostream>
-#include <memory>
-#include <optional>
-#include <sstream>
-#include <type_traits>
-#include <typeinfo>
-#include <unordered_map>
-#include <variant>
-#include <vector>
-
-#ifdef _WIN32
-#include <conio.h>
-#include <windows.h>
-#else
-#include <termios.h>
-#include <unistd.h>
-#endif
-
-/**
- * @internal
 #if defined (_MSVC_LANG)
 #define LINEA_CPLUSPLUS _MSVC_LANG
 #else
@@ -169,7 +141,36 @@
 #define LINEA_CPP17 (LINEA_CPLUSPLUS >= 201703L)
 #define LINEA_CPP20 (LINEA_CPLUSPLUS >= 202002L)
 #define LINEA_CPP26 (LINEA_CPLUSPLUS >= 202603L)
- */
+
+#include <algorithm>
+#include <chrono>
+// #include <concepts> // 20
+#include <functional>
+#include <future>
+#include <iomanip>
+#include <iostream>
+#include <memory>
+#include <sstream>
+#include <type_traits>
+#include <typeinfo>
+#include <unordered_map>
+#include <vector>
+
+#ifdef LINEA_CPP17
+#include <any>
+#include <filesystem>
+#include <optional>
+#endif
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <conio.h>
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <termios.h>
+#include <unistd.h>
+#endif
 
 #define REGISTER_COMMAND_3(ClassName, Name, Desc) \
     static linea::ControllerRegistrar<ClassName> _registrar_##ClassName(Name, Desc)
@@ -243,6 +244,846 @@
 
 namespace linea {
 
+#pragma region
+
+class Args;
+
+/**
+ * Internal objects not intended for public use.
+ */
+namespace __detail {
+
+// Version specific polyfills
+#ifdef LINEA_CPP17
+
+template <typename... Ts>
+using void_t = std::void_t<Ts...>;
+
+template <typename F, typename... Args>
+using invoke_result_t = std::invoke_result_t<F, Args...>
+
+template <typename F, typename... Args>
+using is_invocable = std::is_invocable<F, Args...>;
+
+template <typename F, typename... Args>
+inline constexpr bool is_invocable_v = std::is_invocable_v<F, Args...>;
+
+using string_view = std::string_view;
+
+using any = std::any;
+
+using std::any_cast;
+
+template <typename T>
+using optional = std::optional<T>;
+
+template <typename T>
+struct nullopt_t {};
+
+template <typename T>
+inline constexpr nullopt_t<T> nullopt{};
+
+namespace filesystem {
+
+using std::filesystem::path;
+using std::filesystem::exists;
+
+}
+
+#else
+
+template <typename...>
+using void_t = void;
+
+/* Invoke stuff */
+
+template <typename T>
+struct is_reference_wrapper : std::false_type {};
+
+template <typename T>
+struct is_reference_wrapper<std::reference_wrapper<T>> : std::true_type {};
+
+// Member-function invoke
+template <typename MemFn, typename T, typename... Args>
+auto invoke_impl(MemFn pmf, T&& obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value && !is_reference_wrapper<typename std::decay<T>::type>::value && !std::is_pointer<typename std::decay<T>::type>::value, decltype((std::forward<T>(obj).*pmf)(std::forward<Args>(args)...))::type;
+
+template <typename MemFn, typename T, typename... Args>
+auto invoke_impl(MemFn pmf, std::reference_wrapper<T> obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value, decltype((obj.get().*pmf)(std::forward<Args>(args)...))::type;
+
+template <typename MemFn, typename T, typename... Args>
+auto invoke_impl(MemFn pmf, T* obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value, decltype(((*obj).*pmf)(std::forward<Args>(args)...))::type;
+
+// Member-data invoke
+template <typename MemPtr, typename T>
+auto invoke_impl(MemPtr pmd, T&& obj) -> typename std::enable_if<std::is_member_object_pointer<MemPtr>::value && !is_reference_wrapper<typename std::decay<T>::type>::value && !std::is_pointer<typename std::decay<T>::type>::value, decltype(std::forward<T>(obj).*pmd)>::type;
+
+template <typename MemPtr, typename T>
+auto invoke_impl(MemPtr pmd, std::reference_wrapper<T> obj) -> typename std::enable_if<std::is_member_object_pointer<MemPtr>::value, decltype(obj.get().*pmd)>::type;
+
+template <typename MemPtr, typename T>
+auto invoke_impl(MemPtr pmd, T* obj) -> typename std::enable_if<std::is_member_object_pointer<MemPtr>::value, decltype((*obj).*pmd)>::type;
+
+// Ordinary invoke
+template <typename F, typename... Args>
+auto invoke_impl(F&& f, Args&&... args) -> typename std::enable_if<!std::is_member_function_pointer<typename std::decay<F>::type>::value && !std::is_member_object_pointer<typename std::decay<F>::type>::value, decltype(std::forward<F>(f)(std::forward<Args>(args)...))>::type;
+
+// invoke_result
+template <typename Void, typename F, typename... Args>
+struct invoke_result_impl {};
+
+template <typename F, typename... Args>
+struct invoke_result_impl<decltype(void(invoke_impl(std::declval<F>(), std::declval<Args>()...))), F, Args...> {
+    using type = decltype(invoke_impl(std::declval<F>(), std::declval<Args>()...));
+};
+
+// invoke_result
+template <typename F, typename... Args>
+struct invoke_result : invoke_result_impl<void, F, Args...> {};
+
+template <typename F, typename... Args>
+using invoke_result_t = typename invoke_result<F, Args...>::type;
+
+// is_invocable
+template <typename Void, typename F, typename... Args>
+struct is_invocable_impl : std::false_type {};
+
+template <typename F, typename... Args>
+struct is_invocable_impl<typename std::enable_if<true, decltype(void(invoke_impl(std::declval<F>(), std::declval<Args>()...)))>::type, F, Args...> : std::true_type {};
+
+template <typename F, typename... Args>
+struct is_invocable : is_invocable_impl<void, F, Args...> {};
+
+template <typename F, typename... Args>
+struct is_invocable_v = is_invocable<F, Args...>::value;
+
+// string_view
+class string_view {
+public:
+    constexpr string_view() : data_(nullptr), size_(0) {}
+
+    template <std::size_t N>
+    constexpr string_view(const char (&str)[N]) : data_(str), size_(N - 1) {}
+
+    constexpr string_view(const char* data, std::size_t size) : data_(data), size_(size) {}
+
+    constexpr const char* data() const {
+        return data_;
+    }
+
+    constexpr size_type size() const {
+        return size_;
+    }
+
+    constexpr bool empty() const {
+        return size_ == 0;
+    }
+
+    std::string str() const {
+        return std::string(data_, size_);
+    }
+
+private:
+    const char* data_;
+    std::size_t size_;
+};
+
+// any
+class bad_any_cast : public std::bad_cast {
+public:
+    const char* what() const noexcept override {
+        return "bad_any_cast";
+    }
+};
+
+class any {
+public:
+    any() noexcept = default;
+
+    any(const any& other) : ptr(other.ptr ? other.ptr->clone() : nullptr) {}
+
+    any(any&& other) noexcept : ptr(std::move(other.ptr)) {}
+
+    template <typenameT, typename U = decay_t<T>, typename std::enable_if<!std::is_same<U, any>::value && std::is_copy_constructible<U>::value>::type* == nullptr>
+    any(T&& value) : ptr(new holder<U>(std::forward<T>(value))) {}
+
+    ~any() = default;
+
+    any& operator=(const any& other) {
+        if (this != &other) {
+            any temp(other);
+            swap(temp);
+        }
+        return *this;
+    }
+
+    any& operator=(const any&& other) {
+        if (this != &other) {
+            ptr = std::move(other.ptr);
+        }
+        return *this;
+    }
+
+    template <typenameT, typename U = decay_t<T>, typename std::enable_if<!std::is_same<U, any>::value && std::is_copy_constructible<U>::value>::type* == nullptr>
+    any& operator=(T&& value) {
+        any temp(std::forward<T>(value));
+        swap(temp);
+        return *this;
+    }
+
+    bool has_value() const noexcept {
+        return static_cast<bool>(ptr);
+    }
+
+    const std::type_info& type() const noexcept {
+        return ptr ? ptr->type() : typeid(void);
+    }
+
+    void reset() noexcept {
+        ptr.reset();
+    }
+
+    void swap(any& other) noexcept {
+        ptr.swap(other.ptr);
+    }
+
+private:
+    struct placeholder {
+        virtual ~placeholder() {}
+        virtual std::unique_ptr<placeholder> clone() const = 0;
+        virtual const std::type_info& type() const noexcept = 0;
+    };
+
+    template <typename T>
+    struct holder : placeholder {
+        T value;
+
+        explicit holder(const T& v) : value(v) {}
+
+        explicit holder(T&& v) : value(std::move(v)) {}
+
+        std::unique_ptr<placeholder> clone() const override {
+            return std::unique_ptr<placeholder>(new holder<T>(value));
+        }
+
+        const std::type_info& type() const noexcept override {
+            return typeid(T);
+        }
+    };
+
+    std::unique_ptr<placeholder> ptr;
+
+    template <typename T>
+    using decay_t = typename std::decay<T>::type;
+
+    template <typename T>
+    friend T* any_cast(any*) noexcept;
+
+    template <typename T>
+    friend const T* any_cast(const any*) noexcept;
+};
+
+template <typename T>
+typename std::enable_if<!std::is_reference<T>::value, T*>::type
+any_cast(any* a) noexcept {
+    if (!a || a->ptr->type() != typeid(T)) {
+        return nullptr;
+    }
+
+    return &static_cast<any::holder<T>*(a->ptr.get())->value;
+}
+
+template <typename T>
+typename std::enable_if<!std::is_reference<T>::value, const T*>::type
+any_cast(const any* a) noexcept {
+    if (!a || a->ptr->type() != typeid(T)) {
+        return nullptr;
+    }
+
+    return &static_cast<const any::holder<T>*>(a->ptr.get())->value;
+}
+
+template <typename T>
+typename std::enable_if<!std::is_reference<T>::value, T&>::type
+any_cast(any& a) {
+    T* result = any_cast<T>(&a);
+
+    if (!result) {
+        throw bad_any_cast();
+    }
+
+    return *result;
+}
+
+template <typename T>
+typename std::enable_if<!std::is_reference<T>::value, const T&>::type
+any_cast(const any& a) {
+    const T* result = any_cast<T>(&a);
+
+    if (!result) {
+        throw bad_any_cast();
+    }
+
+    return *result;
+}
+
+template <typename T>
+typename std::enable_if<!std::is_reference<T>::value, T>::type
+any_cast(any&& a) {
+    T* result = any_cast<T>(&a);
+
+    if (!result) {
+        throw bad_any_cast();
+    }
+
+    return std::move(*result);
+}
+
+template <typename T>
+typename std::enable_if<!std::is_reference<T>::value, T>::type
+any_cast(const any&& a) {
+    const T* result = any_cast<T>(&a);
+
+    if (!result) {
+        throw bad_any_cast();
+    }
+
+    return std::move(*result);
+}
+
+template <typename T>
+typename std::enable_if<std::is_lvalue_reference<T>::value, T>::type
+any_cast(any& a) {
+    typedef typename std::remove_reference<T>::type U;
+
+    U* result = any_cast<U>(&a);
+
+    if (!result) {
+        throw bad_any_cast();
+    }
+
+    return *result;
+}
+
+template <typename T>
+typename std::enable_if<std::is_lvalue_reference<T>::value, T>::type
+any_cast(const any& a) {
+    typedef typename std::remove_reference<T>::type U;
+
+    const U* result = any_cast<U>(&a);
+
+    if (!result) {
+        throw bad_any_cast();
+    }
+
+    return *result;
+}
+
+// optional
+struct nullopt_t {
+    explicit constexpr nullopt_t(int) {}
+};
+
+constexpr nullopt_t nullopt{0};
+
+template <typename T>
+class optional {
+public:
+    using value_type = T;
+
+    constexpr optional() noexcept : storage_{}, engaged_(false) {}
+
+    optional(const T& value) : engaged_(false) {
+        new (&storage_) T(value);
+        engaged_ = true;
+    }
+
+    optional(T&& value) : engaged_(false) {
+        new (&storage) T(std::move(value));
+        engaged_ = true;
+    }
+
+    template <typename... Args, typename std::enable_if<std::is_constructible<T, Args&&...>::value, int>::type = 0>
+    explicit optional(std::in_place_t, Args&&... args) : engaged_(false) {
+        new (&storage) T(std::forward<Args>(args)...);
+        engaged_ = true;
+    }
+
+    optional(const optional& other) : engaged_(false) {
+        if (other.engaged_) {
+            new (&storage_) T(*other.ptr());
+            engaged_ = true;
+        }
+    }
+
+    optional& operator=(const optional& other) {
+        if (this == &other) {
+            return *this;
+        }
+
+        if (other.engaged_) {
+            if (engaged_) {
+                *ptr() = *other.ptr();
+            } else {
+                new (&storage_) T(*other.ptr());
+                engaged_ = true;
+            }
+        } else {
+            reset();
+        }
+
+        return *this;
+    }
+
+    optional(optional&& other) : engaged_(false) {
+        if (other.engaged_) {
+            new (&storage_) T(std::move(*other.ptr()));
+            engaged_ = true;
+        }
+    }
+
+    optional& operator=(optional&& other) {
+        if (this == &other) {
+            return *this;
+        }
+
+        if (other.engaged_) {
+            if (engaged_) {
+                *ptr() = std::move(*other.ptr());
+            } else {
+                new (&storage_) T(std::move(*other.ptr()));
+                engaged_ = true;
+            }
+        } else {
+            reset();
+        }
+
+        return *this;
+    }
+
+    ~optional() {
+        reset();
+    }
+
+    optional& operator=(const T& value) {
+        if (engaged_) {
+            *ptr() = value;
+        } else {
+            new (&storage_) T(value);
+            engaged_ = true;
+        }
+        return *this;
+    }
+
+    optional& operator=(T&& value) {
+        if (engaged_) {
+            *ptr() = std::move(value);
+        } else {
+            new (&storage_) T(std::move(value));
+            engaged_ = true;
+        }
+        return *this;
+    }
+
+    explicit operator bool() const noexcept {
+        return engaged_;
+    }
+
+    bool has_value() const noexcept {
+        return engaged_;
+    }
+
+    T& value() & {
+        if (!engaged_) {
+            throw std::logic_error("bad optional access");
+        }
+        return *ptr();
+    }
+
+    const T& value() const & {
+        if (!engaged_) {
+            throw std::logic_error("bad optional access");
+        }
+        return *ptr();
+    }
+
+    T&& value() && {
+        if (!engaged_) {
+            throw std::logic_error("bad optional access");
+        }
+        return std::move(*ptr());
+    }
+
+    const T&& value() const && {
+        if (!engaged_) {
+            throw std::logic_error("bad optional access");
+        }
+        return std::move(*ptr());
+    }
+
+    T& operator*() & {
+        assert(engaged_);
+        return *ptr();
+    }
+
+    const T& operator*() const & {
+        assert(engaged_);
+        return *ptr();
+    }
+
+    T* operator->() {
+        assert(engaged_);
+        return ptr();
+    }
+
+    const T* operator->() const {
+        assert(engaged_);
+        return ptr();
+    }
+
+    template <typename U>
+    T value_or(U&& default_value) const & {
+        return engaged_ ? *ptr() : static_cast<T>(std::forward<U>(default_value));
+    }
+
+    template <typename U>
+    T value_or(U&& default_value) && {
+        return engaged_ ? std::move(*ptr()) : static_cast<T>(std::forward<U>(default_value));
+    }
+
+    void reset() noexcept {
+        if (engaged_) {
+            ptr()->~T();
+            engaged_ = false;
+        }
+    }
+
+    template <typename... Args>
+    T& emplace(Args&&... args) {
+        reset();
+        new (&storage_) T(std::forward<Args>(args)...);
+        engaged_ = true;
+        return *ptr();
+    }
+
+    void swap(optional& other) {
+        if (engaged_ && other.engaged_) {
+            using std::swap;
+            swap(**this, *other);
+        } else if (engaged_) {
+            new (&other.storage_) T(std::move(**this));
+            other.engaged_ = true;
+            reset();
+        } else if (other.engaged_) {
+            new (&storage_) T(std::move(*other));
+            engaged_ = true;
+            other.reset();
+        }
+    }
+
+private:
+    static_assert(!std::is_reference<T>::value, "optional<T&> is not supported");
+
+    using storage_t = typename std::aligned_storage<sizeof(T), alignof(T)>::type;
+
+    storage_t storage_;
+    bool engaged_;
+
+    T* ptr() {
+        return reinterpret_cast<T*>(&storage_);
+    }
+
+    const *T ptr() {
+        return reinterpret_cast<const T*>(&storage_);
+    }
+};
+
+template <typename T>
+bool operator==(const optional<T>& a, const optional<T>& b) {
+    if (a.has_value() != b.has_value()) {
+        return false;
+    }
+    return !a.has_value() || *a == *b;
+}
+
+template <typename T>
+bool operator!=(const optional<T>& a, const optional<T>& b) {
+    return !(a == b);
+}
+
+template <typename T>
+bool operator==(const optional<T>& a, nullopt_t) {
+    return !a.has_value();
+}
+
+template <typename T>
+bool operator==(nullopt_t, const optional<T>& a) {
+    return !a.has_value();
+}
+
+template <typename T>
+bool operator!=(const optional<T>& a, nullopt_t) {
+    return a.has_value();
+}
+
+template <typename T>
+bool operator!=(nullopt_t, const optional<T>& a) {
+    return a.has_value();
+}
+
+// filesystem
+namespace filesystem {
+
+class path {
+public:
+    explicit path(const std::string& value) : value_(value) {}
+
+    const std::string& string() const {
+        return value_;
+    }
+
+private:
+    std::string value_;
+};
+
+inline bool exists(const path& p) {
+#ifdef _WIN32
+    return GetFileAttributesA(p.string().c_str()) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat st;
+    return ::stat(p.string().c_str(), &st) == 0;
+#endif
+}
+
+} // namespace filesystem
+
+#endif
+
+// Macro helpers
+template <typename T, typename MemberT>
+struct Field {
+    const char* name;
+    MemberT::*member;
+};
+
+//
+template <typename T>
+struct function_traits;
+
+template <typename T>
+struct function_traits : function_traits<decltype(&T::operator())> {};
+
+template <typename ClassType, typename ReturnType, typename Arg>
+struct function_traits<ReturnType(ClassType::*)(Arg) const> {
+    using arg_type = std::decay_t<Arg>;
+};
+
+template <typename ReturnType, typename Arg>
+struct function_traits<ReturnType(*)(Arg)> {
+    using arg_type = Arg;
+};
+
+template <typename Fn>
+using function_arg_t = typename function_traits<Fn>::arg_type;
+
+template <typename T>
+std::string pretty_type() {
+    return typeid(T).name();
+}
+template <> std::string pretty_type<int>() { return "int"; }
+template <> std::string pretty_type<std::string>() { return "string"; }
+template <> std::string pretty_type<double>() { return "double"; }
+
+static inline std::string normalise(const std::string& name) {
+    if (name.rfind("--", 0) == 0) return name.substr(2);
+    if (name.rfind("-", 0) == 0) return name.substr(1);
+    return name;
+}
+
+static inline void parse_names(const std::string& input, std::string& long_name, std::string& short_name) {
+    auto comma = input.find(',');
+    if (comma == std::string::npos) {
+        long_name = normalise(input);
+    } else {
+        long_name = normalise(input.substr(0, comma));
+        short_name = normalise(input.substr(comma + 1));
+    }
+}
+
+// Async helpers
+
+// Lower overhead than `std::async(std::launch::deferred, []{});`
+// Especially in C++17
+static inline std::future<void> async_deferred() {
+    std::promise<void> p;
+    p.set_value();
+    return p.get_future();
+}
+
+template <typename T, typename = void>
+struct is_future : std::false_type{};
+
+template <typename T>
+struct is_future<std::future<T>> : std::true_type{};
+
+template <typename T>
+inline constexpr bool is_future_v = is_future<T>::value;
+
+// Command helpers
+template <typename T, typename = void>
+struct has_bind : std::false_type{};
+
+template <typename T>
+struct has_bind<T, std::void_t<decltype(T::bind(std::declval<T&>(), std::declval<const Args&>()))>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool has_bind_v = has_bind<T>::value;
+
+// AutoRegisteredCommand helpers
+/*
+template <typename T>
+concept HasConstexprName = requires {
+    { T::command_name } -> std::convertible_to<const char*>;
+};
+
+template <typename T>
+concept HasConstexprDescription = requires {
+    { T::command_description } -> std::convertible_to<const char*>;
+};
+
+template <typename T>
+concept HasFunctionName = requires {
+    { T::command_name() } -> std::convertible_to<std::string>;
+};
+
+template <typename T>
+concept HasFunctionDescription = requires {
+    { T::command_description() } -> std::convertible_to<std::string>;
+};
+
+template <typename T>
+std::string get_command_name() {
+    if constexpr (HasConstexprName<T>) {
+        return T::command_name;
+    } else if constexpr (HasFunctionName<T>) {
+        return T::command_name();
+    } else {
+        static_assert(sizeof(T) == 0, "Command must define command_name");
+    }
+}
+
+template <typename T>
+std::string get_command_description() {
+    if constexpr (HasConstexprDescription<T>) {
+        return T::command_description;
+    } else if constexpr (HasFunctionDescription<T>) {
+        return T::command_description();
+    } else {
+        return "";
+    }
+}
+*/
+
+template <typename T, typename = void>
+struct has_constexpr_name : std::false_type {};
+
+template <typename T>
+struct has_constexpr_name<T, std::void_t<decltype(T::command_name)>>
+    : std::is_convertible<decltype(T::command_name), const char*> {};
+
+template <typename T>
+inline constexpr bool has_constexpr_name_v = has_constexpr_name<T>::value;
+
+template <typename T, typename = void>
+struct has_function_name : std::false_type {};
+
+template <typename T>
+struct has_function_name<T, std::void_t<decltype(std::declval<T>().command_name())>> 
+    : std::is_convertible<decltype(std::declval<T>().command_name()), std::string> {};
+
+template <typename T>
+inline constexpr bool has_function_name_v = has_function_name<T>::value;
+
+
+template <typename T, typename = void>
+struct has_constexpr_description : std::false_type {};
+
+template <typename T>
+struct has_constexpr_description<T, std::void_t<decltype(T::command_description)>> 
+    : std::is_convertible<decltype(T::command_description), const char*> {};
+
+template <typename T>
+inline constexpr bool has_constexpr_description_v = has_constexpr_description<T>::value;
+
+
+template <typename T, typename = void>
+struct has_function_description : std::false_type {};
+
+template <typename T>
+struct has_function_description<T, std::void_t<decltype(std::declval<T>().command_description())>> 
+    : std::is_convertible<decltype(std::declval<T>().command_description()), std::string> {};
+
+template <typename T>
+inline constexpr bool has_function_description_v = has_function_description<T>::value;
+
+template <typename T>
+std::string get_command_name() {
+    if constexpr (has_constexpr_name_v<T>) {
+        return T::command_name;
+    } else if constexpr (has_function_name_v<T>) {
+        return T::command_name();
+    } else {
+        static_assert(sizeof(T) == 0, "Command must define command_name");
+    }
+}
+
+template <typename T>
+std::string get_command_description() {
+    if constexpr (has_constexpr_description_v<T>) {
+        return T::command_description;
+    } else if constexpr (has_function_description_v<T>) {
+        return T::command_description();
+    } else {
+        return "";
+    }
+}
+
+// helpers for something I forgor
+template <typename T, typename Args, typename = void>
+struct argument_resolver {
+    static T resolve(const Args& args) {
+        return args;
+    }
+};
+
+template <typename T, typename Args>
+struct argument_resolver<T, Args, std::enable_if<!std::is_same<T, Args>::value && has_bind_v<T>>> {
+    static T resolve(const Args& args) {
+        T obj{};
+        T::bind(obj, args);
+        return obj;
+    }
+};
+
+template <typename T, typename Args>
+struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind_v<T> && std::is_constructible<T, const Args&>::value>> {
+    static T resolve(const Args& args) {
+        return T(args);
+    }
+};
+
+// Enable ANSI support for Windows
+#ifdef _WIN32
+HANDLE enableANSI() {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    GetConsoleMode(hOut, &mode);
+    SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    return hOut;
+#endif
+}
+
+} // namespace __detail
+
 namespace ANSI {
 
 namespace __detail {
@@ -269,6 +1110,21 @@ inline std::string oscTerminator(bool st) {
 inline std::string oscCommand(const std::string& body, bool st = false) {
     return "\033]" + body + oscTerminator(st);
 }
+
+struct StringOrInt {
+    enum class Type {Int, String};
+
+    Type type;
+
+    int i;
+    std::string s;
+
+    StringOrInt(int value) : type(Type::Int), i(value) {}
+
+    StringOrInt(std::string value) : type(Type::String), i(0), s(std::move(value)) {}
+
+    StringOrInt(const char* value) : type(Type::String), i(0), s(value) {}
+};
 
 }
 
@@ -650,18 +1506,18 @@ namespace __detail {
 
 class Item {
 public:
-    constexpr std::string_view value() const {
+    constexpr ::linea::__detail::string_view value() const {
         return value_;
     }
 
 private:
-    std::string_view value_;
-    constexpr Item(std::string_view v) : value_(v) {}
+    ::linea::__detail::string_view value_;
+    constexpr Item(::linea::__detail::string_view v) : value_(v) {}
 
-    friend constexpr Item make_item(std::string_view v);
+    friend constexpr Item make_item(::linea::__detail::string_view v);
 };
 
-inline constexpr Item make_item(std::string_view v) {
+inline constexpr Item make_item(::linea::__detail::string_view v) {
     return Item(v);
 }
 
@@ -1000,26 +1856,26 @@ constexpr __detail::Item ALT_SLASH_NUMPAD           = __detail::make_item("0;74"
 } // namespace KBD
 
 // Almost no modern terminals support this.
-inline std::string_view MAP_KEY(KBD::__detail::Item key, const std::string& str) {
+inline ::linea::__detail::string_view MAP_KEY(KBD::__detail::Item key, const std::string& str) {
     return "\033[" + std::string(key.value()) + ";" + "\"" + str + "\"" + "p";
 }
 
 // Almost no modern terminals support this.
-inline std::string_view MAP_KEY(KBD::__detail::Item key, int keycode) {
+inline ::linea::__detail::string_view MAP_KEY(KBD::__detail::Item key, int keycode) {
     return "\033[" + std::string(key.value()) + ";" + std::to_string(keycode) + "p";
 }
 
 // Almost no modern terminals support this.
-inline std::string_view MAP_KEY(KBD::__detail::Item key, const std::vector<std::variant<int, std::string>>& strs) {
+inline ::linea::__detail::string_view MAP_KEY(KBD::__detail::Item key, const std::vector<__detail::StringOrInt>& strs) {
     std::string str;
     for (const auto s : strs) {
         str += ';';
 
-        if (std::holds_alternative<int>(s)) {
-            str += std::to_string(std::get<int>(s));
+        if (s.type == __detail::StringOrInt::Type::Int) {
+            str += std::to_string(s.i);
         } else {
             str += '"';
-            str += std::get<std::string>(s);
+            str += s.s;
             str += '"';
         }
     }
@@ -1028,241 +1884,6 @@ inline std::string_view MAP_KEY(KBD::__detail::Item key, const std::vector<std::
 }
 
 } // namespace ANSI
-
-#pragma region
-
-class Args;
-
-/**
- * Internal objects not intended for public use.
- */
-namespace __detail {
-
-// Macro helpers
-template <typename T, typename MemberT>
-struct Field {
-    const char* name;
-    MemberT::*member;
-};
-
-//
-template <typename T>
-struct function_traits;
-
-template <typename T>
-struct function_traits : function_traits<decltype(&T::operator())> {};
-
-template <typename ClassType, typename ReturnType, typename Arg>
-struct function_traits<ReturnType(ClassType::*)(Arg) const> {
-    using arg_type = std::decay_t<Arg>;
-};
-
-template <typename ReturnType, typename Arg>
-struct function_traits<ReturnType(*)(Arg)> {
-    using arg_type = Arg;
-};
-
-template <typename Fn>
-using function_arg_t = typename function_traits<Fn>::arg_type;
-
-template <typename T>
-std::string pretty_type() {
-    return typeid(T).name();
-}
-template <> std::string pretty_type<int>() { return "int"; }
-template <> std::string pretty_type<std::string>() { return "string"; }
-template <> std::string pretty_type<double>() { return "double"; }
-
-static inline std::string normalise(const std::string& name) {
-    if (name.rfind("--", 0) == 0) return name.substr(2);
-    if (name.rfind("-", 0) == 0) return name.substr(1);
-    return name;
-}
-
-static inline void parse_names(const std::string& input, std::string& long_name, std::string& short_name) {
-    auto comma = input.find(',');
-    if (comma == std::string::npos) {
-        long_name = normalise(input);
-    } else {
-        long_name = normalise(input.substr(0, comma));
-        short_name = normalise(input.substr(comma + 1));
-    }
-}
-
-// Async helpers
-
-// Lower overhead than `std::async(std::launch::deferred, []{});`
-// Especially in C++17
-static inline std::future<void> async_deferred() {
-    std::promise<void> p;
-    p.set_value();
-    return p.get_future();
-}
-
-template <typename T, typename = void>
-struct is_future : std::false_type{};
-
-template <typename T>
-struct is_future<std::future<T>> : std::true_type{};
-
-template <typename T>
-inline constexpr bool is_future_v = is_future<T>::value;
-
-// Command helpers
-template <typename T, typename = void>
-struct has_bind : std::false_type{};
-
-template <typename T>
-struct has_bind<T, std::void_t<decltype(T::bind(std::declval<T&>(), std::declval<const Args&>()))>> : std::true_type {};
-
-template <typename T>
-inline constexpr bool has_bind_v = has_bind<T>::value;
-
-// AutoRegisteredCommand helpers
-/*
-template <typename T>
-concept HasConstexprName = requires {
-    { T::command_name } -> std::convertible_to<const char*>;
-};
-
-template <typename T>
-concept HasConstexprDescription = requires {
-    { T::command_description } -> std::convertible_to<const char*>;
-};
-
-template <typename T>
-concept HasFunctionName = requires {
-    { T::command_name() } -> std::convertible_to<std::string>;
-};
-
-template <typename T>
-concept HasFunctionDescription = requires {
-    { T::command_description() } -> std::convertible_to<std::string>;
-};
-
-template <typename T>
-std::string get_command_name() {
-    if constexpr (HasConstexprName<T>) {
-        return T::command_name;
-    } else if constexpr (HasFunctionName<T>) {
-        return T::command_name();
-    } else {
-        static_assert(sizeof(T) == 0, "Command must define command_name");
-    }
-}
-
-template <typename T>
-std::string get_command_description() {
-    if constexpr (HasConstexprDescription<T>) {
-        return T::command_description;
-    } else if constexpr (HasFunctionDescription<T>) {
-        return T::command_description();
-    } else {
-        return "";
-    }
-}
-*/
-
-template <typename T, typename = void>
-struct has_constexpr_name : std::false_type {};
-
-template <typename T>
-struct has_constexpr_name<T, std::void_t<decltype(T::command_name)>>
-    : std::is_convertible<decltype(T::command_name), const char*> {};
-
-template <typename T>
-inline constexpr bool has_constexpr_name_v = has_constexpr_name<T>::value;
-
-template <typename T, typename = void>
-struct has_function_name : std::false_type {};
-
-template <typename T>
-struct has_function_name<T, std::void_t<decltype(std::declval<T>().command_name())>> 
-    : std::is_convertible<decltype(std::declval<T>().command_name()), std::string> {};
-
-template <typename T>
-inline constexpr bool has_function_name_v = has_function_name<T>::value;
-
-
-template <typename T, typename = void>
-struct has_constexpr_description : std::false_type {};
-
-template <typename T>
-struct has_constexpr_description<T, std::void_t<decltype(T::command_description)>> 
-    : std::is_convertible<decltype(T::command_description), const char*> {};
-
-template <typename T>
-inline constexpr bool has_constexpr_description_v = has_constexpr_description<T>::value;
-
-
-template <typename T, typename = void>
-struct has_function_description : std::false_type {};
-
-template <typename T>
-struct has_function_description<T, std::void_t<decltype(std::declval<T>().command_description())>> 
-    : std::is_convertible<decltype(std::declval<T>().command_description()), std::string> {};
-
-template <typename T>
-inline constexpr bool has_function_description_v = has_function_description<T>::value;
-
-template <typename T>
-std::string get_command_name() {
-    if constexpr (has_constexpr_name_v<T>) {
-        return T::command_name;
-    } else if constexpr (has_function_name_v<T>) {
-        return T::command_name();
-    } else {
-        static_assert(sizeof(T) == 0, "Command must define command_name");
-    }
-}
-
-template <typename T>
-std::string get_command_description() {
-    if constexpr (has_constexpr_description_v<T>) {
-        return T::command_description;
-    } else if constexpr (has_function_description_v<T>) {
-        return T::command_description();
-    } else {
-        return "";
-    }
-}
-
-// helpers for something I forgor
-template <typename T, typename Args, typename = void>
-struct argument_resolver {
-    static T resolve(const Args& args) {
-        return args;
-    }
-};
-
-template <typename T, typename Args>
-struct argument_resolver<T, Args, std::enable_if<!std::is_same<T, Args>::value && has_bind_v<T>>> {
-    static T resolve(const Args& args) {
-        T obj{};
-        T::bind(obj, args);
-        return obj;
-    }
-};
-
-template <typename T, typename Args>
-struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind_v<T> && std::is_constructible<T, const Args&>::value>> {
-    static T resolve(const Args& args) {
-        return T(args);
-    }
-};
-
-// Enable ANSI support for Windows
-#ifdef _WIN32
-HANDLE enableANSI() {
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD mode = 0;
-    GetConsoleMode(hOut, &mode);
-    SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-    return hOut;
-#endif
-}
-
-} // namespace __detail
 
 enum class ErrorKind {
     UnknownCommand,
@@ -1277,7 +1898,7 @@ struct CLIError : std::runtime_error {
 
     CLIError(ErrorKind k, std::string msg) : std::runtime_error(std::move(msg)), kind(k) {}
 
-    std::string_view message() const {
+    __detail::string_view message() const {
         return "\033[31m[Error]:\033[0m " + std::string(std::runtime_error::what());
     }
 };
@@ -1296,7 +1917,7 @@ public:
     virtual std::string type_name() const = 0;
     virtual bool is_flag() const = 0;
 
-    virtual std::any get_value() const = 0;
+    virtual __detail::any get_value() const = 0;
 
     virtual void print_default(std::ostream& os) const {
         if (has_default) os << "(Default: <unknown type>)";
@@ -1306,7 +1927,7 @@ public:
     T get_value_typed() const {
         auto val = get_value();
         try {
-            return std::any_cast<T>(val);
+            return __detail::any_cast<T>(val);
         } catch (...) {
             throw std::runtime_error("Type mismatch for argument: " + long_name);
         }
@@ -1340,23 +1961,23 @@ public:
             throw std::runtime_error("Unknown argument: " + name);
         }
 
-        std::any val = it->second->get_value();
+        __detail::any val = it->second->get_value();
         try {
-            return std::any_cast<T>(val);
+            return __detail::any_cast<T>(val);
         } catch (...) {
             throw std::runtime_error("Type mismatch for argument: " + name);
         }
     }
 
     template <typename T>
-    std::optional<T> try_get(const std::string& name) const {
+    linea::__detail::optional<T> try_get(const std::string& name) const {
         auto it = options->find(name);
-        if (it == options->end()) return std::nullopt;
+        if (it == options->end()) return __detail::nullopt;
 
         try {
-            return std::any_cast<T>(it->second->get_value());
+            return __detail::any_cast<T>(it->second->get_value());
         } catch (...) {
-            return std::nullopt;
+            return __detail::nullopt;
         }
     }
 
@@ -1588,7 +2209,7 @@ public:
         return false;
     }
 
-    std::any get_value() const override {
+    __detail::any get_value() const override {
         return target ? *target : value;
     }
 
@@ -1660,7 +2281,7 @@ public:
         return true;
     }
 
-    std::any get_value() const override {
+    __detail::any get_value() const override {
         return target ? *target : value;
     }
 
@@ -1684,13 +2305,25 @@ std::string to_string_impl(const T& v, ...) {
     return "<unprintable>";
 }
 
-template <typename T>
+/* template <typename T>
 std::string to_string_generic(const T& v) {
     if constexpr (std::is_convertible<T, std::string>::value) {
         return v;
     } else {
         return to_string_impl(v, 0);
     }
+} */
+
+template <typename T>
+typename std::enable_if<std::is_convertible<T, std::string>::value, std::string>::type
+to_string_generic(const T& v) {
+    return v;
+}
+
+template <typename T>
+typename std::enable_if<!std::is_convertible<T, std::string>::value, std::string>::type
+to_string_generic(const T& v) {
+    return to_string_impl(v, 0);
 }
 
 } // namespace __detail
@@ -1699,7 +2332,7 @@ std::string to_string_generic(const T& v) {
 template <typename T = std::string>
 struct file_exists {
     bool operator()(const T& value) const {
-        return std::filesystem::exists(std::filesystem::path(value));
+        return linea::__detail::filesystem::exists(linea::__detail::filesystem::path(value));
     }
 
     std::string message(const std::string& opt, const T& value) const {
@@ -1975,7 +2608,7 @@ public:
     }
 
 private:
-    std::function<std::any(const Args&)> binder;
+    std::function<__detail::any(const Args&)> binder;
 
     template <typename T>
     T& register_option(std::unique_ptr<T> opt) {
@@ -2009,7 +2642,7 @@ private:
             if (val.type() != typeid(T)) {
                 throw std::runtime_error("Binder returned wrong type");
             }
-            return std::any_cast<T>(val);
+            return __detail::any_cast<T>(val);
         }
 
         static_assert(
@@ -2031,16 +2664,16 @@ private:
 
     template <typename Fn>
     std::future<void> invoke(Fn& fn, const Args& args) {
-        if constexpr (std::is_invocable_v<Fn, const Args&>) {
-            using Ret = std::invoke_result_t<Fn, const Args&>;
+        if constexpr (__detail::is_invocable_v<Fn, const Args&>) {
+            using Ret = __detail::invoke_result_t<Fn, const Args&>;
             if constexpr (__detail::is_future_v<Ret>) {
                 return fn(args);
             } else {
                 fn(args);
                 return __detail::async_deferred();
             }
-        } else if constexpr (std::is_invocable_v<Fn>) {
-            using Ret = std::invoke_result_t<Fn>;
+        } else if constexpr (__detail::is_invocable_v<Fn>) {
+            using Ret = __detail::invoke_result_t<Fn>;
             if constexpr (__detail::is_future_v<Ret>) {
                 return fn();
             } else {
@@ -2520,7 +3153,7 @@ private:
 
     std::chrono::steady_clock::time_point start_time_ = std::chrono::steady_clock::now();
 
-    std::optional<double> manual_eta_seconds_;
+    linea::__detail::optional<double> manual_eta_seconds_;
     mutable double smoothed_eta_ = -1.0;
 
     std::function<std::string(const ProgressBar&)> formatter_;
@@ -2932,7 +3565,7 @@ protected:
     Theme theme_;
     Options options_;
 
-    std::optional<std::string> default_;
+    linea::__detail::optional<std::string> default_;
 
     std::function<bool(const std::string&)> validator_;
     std::string error_message_ = "Invalid input";
