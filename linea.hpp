@@ -108,7 +108,7 @@
  *       - Shared library plugins
  *       - Runtime loading
  *       - Version checks
- * - Built-in testing
+ * - Built-in testing (make it return vector later)
  *   - e.g. auto result = cli.test("--port 3000"); assert(result.port == 3000);
  *   - Or something like that idk
  * - Async and signal handling
@@ -156,95 +156,20 @@
 #include <unistd.h>
 #endif
 
-/*
+/**
+ * @internal
 #if defined (_MSVC_LANG)
 #define LINEA_CPLUSPLUS _MSVC_LANG
 #else
 #define LINEA_CPLUSPLUS __cplusplus
 #endif
 
+#define LINEA_CPP11 (LINEA_CPLUSPLUS >= 201103L)
+#define LINEA_CPP14 (LINEA_CPLUSPLUS >= 201402L)
 #define LINEA_CPP17 (LINEA_CPLUSPLUS >= 201703L)
 #define LINEA_CPP20 (LINEA_CPLUSPLUS >= 202002L)
 #define LINEA_CPP26 (LINEA_CPLUSPLUS >= 202603L)
-
-#if LINEA_CPP17
-#include <any>
-#include <optional>
-namespace linea {
-    using any = std::any;
-    template <typename T>
-    inline T any_cast(const any& a) {
-        return std::any_cast<T>(a);
-    }
-
-    template <typename T>
-    using optional = std::optional<T>;
-    constexpr auto nullopt = std::nullopt;
-}
-#else
-namespace linea {
-    class any {
-    public:
-        any() {}
-        template <typename T>
-        any(const T& v) : ptr(new derived<T>(v)) {}
-        any(const any& other) : ptr(other.ptr ? other.ptr->clone() : nullptr) {}
-
-        template <typename T>
-        T cast() const {
-            return static_cast<derived<T>*>(ptr.get())->value;
-        }
-
-        bool has_value() const {
-            return ptr != nullptr;
-        }
-
-    private:
-        struct base {
-            virtual ~base() {}
-            virtual std::unique_ptr<base> clone() const = 0;
-        };
-        template <typename T>
-        struct derived : base {
-            T value;
-            derived(const T& v) : value(v) {}
-            std::unique_ptr<base> clone() const override {
-                return std::unique_ptr<base>(new derived(value));
-            }
-        };
-        std::unique_ptr<base> ptr;
-    };
-
-    template <typename T>
-    T any_cast(const any& a) {
-        return a.cast<T>();
-    }
-
-    template <typename T>
-    class optional {
-    public:
-        optional() : has(false) {}
-        optional(const T& v) : has(true), value(v) {}
-        bool has_value() const {
-            return has;
-        }
-        T& operator*() {
-            return value;
-        }
-        const T& operator*() const {
-            return value;
-        }
-    
-    private:
-        bool has;
-        T value;
-    };
-
-    struct nullopt_t{};
-    static const nullopt_t nullopt{};
-}
-#endif
-*/
+ */
 
 #define REGISTER_COMMAND_3(ClassName, Name, Desc) \
     static linea::ControllerRegistrar<ClassName> _registrar_##ClassName(Name, Desc)
@@ -1771,7 +1696,7 @@ std::string to_string_generic(const T& v) {
 } // namespace __detail
 
 // FS
-template <typename T>
+template <typename T = std::string>
 struct file_exists {
     bool operator()(const T& value) const {
         return std::filesystem::exists(std::filesystem::path(value));
@@ -1783,7 +1708,7 @@ struct file_exists {
 };
 
 // Numerical
-template <typename T>
+template <typename T = int>
 struct is_negative {
     bool operator()(const T& value) const {
         return value < 0;
@@ -1794,7 +1719,7 @@ struct is_negative {
     }
 };
 
-template <typename T>
+template <typename T = int>
 struct is_positive {
     bool inc_zero = false;
 
@@ -1810,7 +1735,7 @@ struct is_positive {
     }
 };
 
-template <typename T>
+template <typename T = int>
 struct max {
     T max;
 
@@ -1826,7 +1751,7 @@ struct max {
     }
 };
 
-template <typename T>
+template <typename T = int>
 struct min {
     T min;
 
@@ -1842,7 +1767,7 @@ struct min {
     }
 };
 
-template <typename T>
+template <typename T = int>
 struct range {
     T min;
     T max;
@@ -1861,7 +1786,7 @@ struct range {
 };
 
 // Strings
-template <typename T>
+template <typename T = std::string>
 struct one_of {
     std::vector<T> values;
 
@@ -1885,7 +1810,7 @@ struct one_of {
     }
 };
 
-template <typename T>
+template <typename T = std::string>
 struct not_one_of {
     one_of<T> o;
 
@@ -2146,19 +2071,134 @@ public:
     }
 
     int run(int argc, char** argv) {
-        try {
 #ifdef _WIN32
-            __detail::enableANSI();
+        __detail::enableANSI();
 #endif
 
-            load_controllers();
+        if (argc < 2) {
+            print_help(argv[0]);
+            return 0;
+        }
 
-            if (argc < 2) {
-                print_help(argv[0]);
-                return 0;
+        int ec = run_command(argc, argv, 1);
+        return ec;
+    }
+
+    void print_help(const char* n) {
+        if (!name.empty()) {
+            std::cout << name;
+        } else {
+            std::cout << n;
+        }
+
+        if (!description.empty()) {
+            std::cout << " - " << description;
+        }
+        std::cout << "\n\n";
+        
+        std::cout << "Usage:\n";
+        std::cout << "  " << (name.empty() ? n : name) << " <command> [options]\n\n";
+
+        size_t max_width = 0;
+        for (auto& cmd : commands) {
+            if (cmd->name.size() > max_width) {
+                max_width = cmd->name.size();
+            }
+        }
+
+        std::cout << "Commands:\n";
+        for (auto& cmd : commands) {
+            std::cout << "  " << std::left << std::setw(max_width + 4) << cmd->name << cmd->description << "\n";
+        }
+
+        std::cout << "\n";
+    }
+
+    int test(const std::string& command) {
+        std::vector<std::string> args;
+        split_test_command(command, args);
+
+        std::vector<char*> cargs;
+        cargs.reserve(args.size() + 1);
+
+        for (auto& arg : args) {
+            cargs.push_back(arg.data());
+        }
+
+        cargs.push_back(nullptr);
+        
+        char** argv = cargs.data();
+
+        int ec = run_command(cargs.size(), argv, 0);
+        return ec;
+    }
+
+    int test(std::vector<std::string> args) {
+        std::vector<char*> cargs;
+        cargs.reserve(args.size() + 1);
+
+        for (auto& arg : args) {
+            cargs.push_back(arg.data());
+        }
+
+        cargs.push_back(nullptr);
+        
+        char** argv = cargs.data();
+
+        int ec = run_command(cargs.size(), argv, 0);
+        return ec;
+    }
+
+private:
+    std::vector<std::unique_ptr<Command>> commands;
+    std::unordered_map<std::string, Command*> command_map;
+
+    bool controllers_loaded = false;
+
+    void load_controllers() {
+        for (auto& reg : CommandController::get_registry()) {
+            auto& cmd = this->command(reg.name);
+            cmd.description = reg.description;
+
+            auto controller_instance = reg.creator();
+            controller_instance->setup(cmd);
+
+            std::shared_ptr<CommandController> shared_controller = std::move(controller_instance);
+            cmd.run([shared_controller](const Args& args) -> std::future<void> {
+                return shared_controller->execute_async(args);
+            });
+
+        }
+    }
+
+    size_t split_test_command(const std::string& str, std::vector<std::string>& out) {
+        size_t pos = str.find(' ');
+        size_t initialPos = 0;
+        out.clear();
+
+        while (pos != std::string::npos) {
+            out.push_back(str.substr(initialPos, pos - initialPos));
+            initialPos = pos + 1;
+            pos = str.find(' ', initialPos);
+        }
+
+        out.push_back(str.substr(initialPos, std::min(pos, str.size()) - initialPos + 1));
+        return out.size();
+    }
+
+    /**
+     * @brief Run a command
+     * 
+     * @param fa Index of the first argument (excluding tool name)
+     */
+    int run_command(int argc, char **argv, int fa) {
+        try {
+            if (!controllers_loaded) {
+                load_controllers();
+                controllers_loaded = true;
             }
 
-            std::string cmd_name = argv[1];
+            std::string cmd_name = argv[fa];
 
             auto it = command_map.find(cmd_name);
             if (it == command_map.end()) {
@@ -2167,7 +2207,7 @@ public:
             Command& cmd = *it->second;
 
             size_t pos_index = 0;
-            for (int i = 2; i < argc; ++i) {
+            for (int i = fa + 1; i < argc; ++i) {
                 std::string arg = argv[i];
 
                 if (arg == "--help" || arg == "-h") {
@@ -2289,56 +2329,6 @@ public:
         } catch (const std::exception& e) {
             std::cerr << "Internal error: " << e.what() << "\n";
             return 1;
-        }
-    }
-
-    void print_help(const char* n) {
-        if (!name.empty()) {
-            std::cout << name;
-        } else {
-            std::cout << n;
-        }
-
-        if (!description.empty()) {
-            std::cout << " - " << description;
-        }
-        std::cout << "\n\n";
-        
-        std::cout << "Usage:\n";
-        std::cout << "  " << (name.empty() ? n : name) << " <command> [options]\n\n";
-
-        size_t max_width = 0;
-        for (auto& cmd : commands) {
-            if (cmd->name.size() > max_width) {
-                max_width = cmd->name.size();
-            }
-        }
-
-        std::cout << "Commands:\n";
-        for (auto& cmd : commands) {
-            std::cout << "  " << std::left << std::setw(max_width + 4) << cmd->name << cmd->description << "\n";
-        }
-
-        std::cout << "\n";
-    }
-
-private:
-    std::vector<std::unique_ptr<Command>> commands;
-    std::unordered_map<std::string, Command*> command_map;
-
-    void load_controllers() {
-        for (auto& reg : CommandController::get_registry()) {
-            auto& cmd = this->command(reg.name);
-            cmd.description = reg.description;
-
-            auto controller_instance = reg.creator();
-            controller_instance->setup(cmd);
-
-            std::shared_ptr<CommandController> shared_controller = std::move(controller_instance);
-            cmd.run([shared_controller](const Args& args) -> std::future<void> {
-                return shared_controller->execute_async(args);
-            });
-
         }
     }
 };
