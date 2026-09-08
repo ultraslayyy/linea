@@ -81,7 +81,7 @@ REGISTER_COMMAND(LoginCommand);
 
 int main(int argc, char** argv) {
     linea::App app;
-    int port;
+    int port = 1; // indeterminate without init as 1
     bool verbose = false;
 
     app.command("serve")

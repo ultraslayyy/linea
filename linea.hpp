@@ -130,7 +130,7 @@
  * - Middleware
  */
 
-#if defined (_MSVC_LANG)
+#ifdef _MSVC_LANG
 #define LINEA_CPLUSPLUS _MSVC_LANG
 #else
 #define LINEA_CPLUSPLUS __cplusplus
@@ -142,16 +142,51 @@
 #define LINEA_CPP20 (LINEA_CPLUSPLUS >= 202002L)
 #define LINEA_CPP26 (LINEA_CPLUSPLUS >= 202603L)
 
+/*
+#if LINEA_CPP11
+#define LINEA_NORETURN [[noreturn]]
+#else
+#define LINEA_NORETURN
+#endif
+*/
+
+#if LINEA_CPP14
+#define LINEA_DEPRECATED [[deprecated]]
+#else
+#define LINEA_DEPRECATED
+#endif
+
 #if LINEA_CPP17
 #define LINEA_INLINE inline
+// #define LINEA_NODISCARD [[nodiscard]]
 #else
 #define LINEA_INLINE
+// #define LINEA_NODISCARD
 #endif
+
+/*
+#if LINEA_CPP20
+#define LINEA_NODISCARD_S(s) [[nodiscard(#s)]]
+#define LINEA_LIKELY [[likely]]
+#define LINEA_UNLIKELY [[unlikely]]
+#else
+#define LINEA_NODISCARD_S(s) [[nodiscard]]
+#define LINEA_LIKELY
+#define LINEA_UNLIKELY
+#endif
+*/
+
+/*
+#if LINEA_CPP26
+#define LINEA_INDETERMINATE [[indeterminate]]
+#else
+#define LINEA_INDETERMINATE
+#endif
+*/
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
-// #include <concepts> // 20
 #include <functional>
 #include <future>
 #include <iomanip>
@@ -164,10 +199,21 @@
 #include <utility>
 #include <vector>
 
-#ifdef LINEA_CPP17
+#if LINEA_CPP17
 #include <any>
 #include <filesystem>
 #include <optional>
+#endif
+
+#if LINEA_CPP26 && defined(LINEA_ENABLE_REFLECTION)
+#include <meta>
+#define LINEA_INT_REFLECTION
+#endif
+
+#if LINEA_CPP26 && defined(LINEA_ENABLE_CONTRACTS)
+#define LINEA_CONTRACT_PRE(x) pre(x)
+#else
+#define LINEA_CONTRACT_PRE(x)
 #endif
 
 #ifdef _WIN32
@@ -181,6 +227,8 @@
 #include <termios.h>
 #include <unistd.h>
 #endif
+
+// TODO: Remove the need for these in C++26 using reflection
 
 #define REGISTER_COMMAND_3(ClassName, Name, Desc) \
     static linea::ControllerRegistrar<ClassName> _registrar_##ClassName(Name, Desc)
@@ -904,6 +952,40 @@ constexpr const T& clamp(const T& value, const T& lo, const T& hi) {
 
 #endif
 
+// C++26 reflection
+#ifdef LINEA_INT_REFLECTION
+namespace reflection {
+
+template <typename T>
+consteval bool is_bindable() {
+    if constexpr (!std::is_class_v<T>) {
+        return false;
+    } else if constexpr (!std::is_default_constructible_v<T>) {
+        return false;
+    } else {
+        constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(^^T, std::meta::access_context::current()));
+        return members.size() != 0;
+    }
+}
+
+template <typename T>
+inline constexpr bool is_bindable_v = is_bindable<T>();
+
+template <typename T, typename Args>
+T bind(const Args& args) {
+    T result{};
+
+    constexpr auto members = std::define_static_array(std::meta::nonstatic_data_members_of(^^T, std::meta::access_context::current()));
+    template for (constexpr auto member : members) {
+        result.[:member:] = args.template get<typename[:std::meta::type_of(member):]>(std::string(std::meta::identifier_of(member)));
+    }
+
+    return result;
+}
+
+} // namespace reflection
+#endif
+
 // Macro helpers
 template <typename T, typename MemberT>
 struct Field {
@@ -966,23 +1048,34 @@ static inline std::future<void> async_deferred() {
 }
 
 template <typename T, typename = void>
-struct is_future : std::false_type{};
+struct is_future : std::false_type {};
 
 template <typename T>
-struct is_future<std::future<T>> : std::true_type{};
+struct is_future<std::future<T>> : std::true_type {};
 
 template <typename T>
 LINEA_INLINE constexpr bool is_future_v = is_future<T>::value;
 
 // Command helpers
 template <typename T, typename = void>
-struct has_bind : std::false_type{};
+struct has_bind : std::false_type {};
 
 template <typename T>
 struct has_bind<T, void_t<decltype(T::bind(std::declval<T&>(), std::declval<const Args&>()))>> : std::true_type {};
 
 template <typename T>
 LINEA_INLINE constexpr bool has_bind_v = has_bind<T>::value;
+
+template <typename T>
+struct is_reflection_bindable : std::false_type {};
+
+#if LINEA_CPP26
+template <typename T>
+struct is_reflection_bindable<T> : std::integral_constant<bool, reflection::is_bindable_v<T>> {};
+#endif
+
+template <typename T>
+LINEA_INLINE constexpr bool is_reflection_bindable_v = is_reflection_bindable<T>::value;
 
 // AutoRegisteredCommand helpers
 /*
@@ -1153,6 +1246,15 @@ struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value
         return T(args);
     }
 };
+
+#ifdef LINEA_INT_REFLECTION
+template <typename T, typename Args>
+struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind_v<T> && !std::is_constructible<T, const Args&>::value && reflection::is_bindable_v<T>>> {
+    static T resolve(const Args& args) {
+        return reflection::bind<T>(args);
+    }
+}
+#endif
 
 // Enable ANSI support for Windows
 #ifdef _WIN32
@@ -2048,7 +2150,9 @@ public:
     const std::vector<PositionalInfo>* positionals;
 
     template <typename T>
-    T get(const std::string& name) const {
+    T get(const std::string& name) const
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         auto it = options->find(name);
         if (it == options->end()) {
             throw std::runtime_error("Unknown argument: " + name);
@@ -2063,7 +2167,9 @@ public:
     }
 
     template <typename T>
-    linea::__detail::optional<T> try_get(const std::string& name) const {
+    linea::__detail::optional<T> try_get(const std::string& name) const
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         auto it = options->find(name);
         if (it == options->end()) return __detail::nullopt;
 
@@ -2084,7 +2190,9 @@ public:
     }
 
     template <typename T>
-    T positional(const std::string& name) const {
+    T positional(const std::string& name) const
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         for (auto& pos : *positionals) {
             if (pos.name == name) {
                 return pos.opt->template get_value_typed<T>();
@@ -2198,7 +2306,9 @@ struct ControllerRegistrar {
     }
 
 private:
-    void register_it(const std::string& name, const std::string& desc) {
+    void register_it(const std::string& name, const std::string& desc)
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         auto& reg = CommandController::get_registry();
 
         auto it = std::find_if(reg.begin(), reg.end(),
@@ -2222,15 +2332,21 @@ public:
     T value;
     T default_val{};
 
-    Option(const std::string& name, T& ref) : target(&ref) {
+    Option(const std::string& name, T& ref)
+        LINEA_CONTRACT_PRE(!name.empty())
+    : target(&ref) {
         __detail::parse_names(name, long_name, short_name);
     }
 
-    Option(const std::string& name) : target(nullptr) {
+    Option(const std::string& name)
+        LINEA_CONTRACT_PRE(!name.empty())
+    : target(nullptr) {
         __detail::parse_names(name, long_name, short_name);
     }
 
-    Option(CommandController* ctx, const std::string& name, const std::string& desc = "") {
+    Option(CommandController* ctx, const std::string& name, const std::string& desc = "")
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         __detail::parse_names(name, long_name, short_name);
         description = desc;
 
@@ -2322,7 +2438,9 @@ class Positional : public Option<T> {
 public:
     bool required = false;
 
-    Positional(CommandController* ctx, const std::string& name, const std::string& desc = "") : Option<T>(nullptr, name, desc) {
+    Positional(CommandController* ctx, const std::string& name, const std::string& desc = "")
+        LINEA_CONTRACT_PRE(!name.empty())
+    : Option<T>(nullptr, name, desc) {
         this->long_name = name;
 
         if (ctx) {
@@ -2330,7 +2448,9 @@ public:
         }
     }
 
-    Positional(CommandController* ctx, const std::string& name, const std::string& desc, bool required) : Option<T>(nullptr, name, desc) {
+    Positional(CommandController* ctx, const std::string& name, const std::string& desc, bool required)
+        LINEA_CONTRACT_PRE(!name.empty())
+    : Option<T>(nullptr, name, desc) {
         this->long_name = name;
 
         if (ctx) {
@@ -2338,7 +2458,9 @@ public:
         }
     }
 
-    Positional(CommandController* ctx, const std::string& name, bool required) : Positional(ctx, name, "", required) {}
+    Positional(CommandController* ctx, const std::string& name, bool required)
+        LINEA_CONTRACT_PRE(!name.empty())
+    : Positional(ctx, name, "", required) {}
 
     Positional& set_required(bool is_req = true) {
         required = is_req;
@@ -2348,11 +2470,15 @@ public:
 
 class Flag : public OptionBase {
 public:
-    Flag(const std::string& name, bool& ref) : target(&ref), value(false) {
+    Flag(const std::string& name, bool& ref)
+        LINEA_CONTRACT_PRE(!name.empty())
+    : target(&ref), value(false) {
         __detail::parse_names(name, long_name, short_name);
     }
 
-    Flag(const std::string& name) : target(nullptr), value(false) {
+    Flag(const std::string& name)
+        LINEA_CONTRACT_PRE(!name.empty())
+    : target(nullptr), value(false) {
         __detail::parse_names(name, long_name, short_name);
     }
 
@@ -2436,12 +2562,17 @@ struct file_exists {
 // Numerical
 template <typename T = int>
 struct is_negative {
+    bool inc_zero = false;
+
+    is_negative(bool include_zero = false) : inc_zero(include_zero) {}
+
     bool operator()(const T& value) const {
-        return value < 0;
+        return inc_zero ? value <= 0 : value < 0;
     }
 
     std::string message(const std::string& opt, const T& value) const {
-        return opt + " must be negative (input: " + __detail::to_string_generic(value) + ")";
+        return opt + " must be negative" + (inc_zero ? " or zero" : "")
+                   + " (input: " + __detail::to_string_generic(value) + ")";
     }
 };
 
@@ -2452,12 +2583,34 @@ struct is_positive {
     is_positive(bool include_zero = false) : inc_zero(include_zero) {}
 
     bool operator()(const T& value) const {
-        return inc_zero ? value >= 0 : value > 0; // 0 is not technically positive fyi
+        return inc_zero ? value >= 0 : value > 0; // 0 is not technically positive
     }
 
     std::string message(const std::string& opt, const T& value) const {
         return opt + " must be positive" + (inc_zero ? " or zero" : "")
                    + " (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T = int>
+struct is_even {
+    bool operator()(const T& value) const {
+        return (value % 2) == 0;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must be even" + " (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T = int>
+struct is_odd {
+    bool operator()(const T& value) const {
+        return (value % 2) == 1;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must be odd" + " (input: " + __detail::to_string_generic(value) + ")";
     }
 };
 
@@ -2497,21 +2650,164 @@ template <typename T = int>
 struct range {
     T min;
     T max;
+    bool ex;
 
-    range(T min_, T max_) : min(min_), max(max_) {}
+    range(T min_, T max_, bool exclusive = false) : min(min_), max(max_) : ex(exclusive) {}
 
     bool operator()(const T& value) const {
-        return value >= min && value <= max;
+        return ex ? value > min && value < max : value >= min && value <= max;
     }
 
     std::string message(const std::string& opt, const T& value) const {
         return opt + " must within the range [" + __detail::to_string_generic(min)
                    + ", " + __detail::to_string_generic(max)
-                   + "] (input: " + __detail::to_string_generic(value) + ")";
+                   + "]" + (ex ? " exclusive " : "inclusive ")
+                   + "(input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T = int>
+struct is_multiple_of {
+    T mult;
+
+    is_multiple_of(T multiple)
+        LINEA_CONTRACT_PRE(multiple > 0)
+    : mult(multiple) {}
+
+    bool operator()(const T& value) const {
+        return (value % mult) == 0;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must be a multiple of '" + __detail::to_string_generic(mult)
+                   + "' (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T = float>
+struct is_whole {
+    bool operator()(const T& value) const {
+        return static_cast<long long>(value) == value;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must be a whole number (input: " + __detail::to_string_generic(value) + ")";
     }
 };
 
 // Strings
+template <typename T = std::string>
+struct non_empty {
+    bool operator()(const T& value) const {
+        return !value.empty();
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must not be empty (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T = std::string>
+struct empty {
+    bool operator()(const T& value) const {
+        return value.empty();
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must be empty (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T = std::string>
+struct min_length {
+    int min;
+
+    min_length(int min) : min(min) {}
+
+    bool operator()(const T& value) const {
+        return value.length() <= min;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " has a minimum length of '" + __detail::to_string_generic(min)
+                   + "' (input: " + __detail::to_string_generic(value)
+                   + ", length: " + __detail::to_string_generic(value.length()) + ")";
+    }
+};
+
+template <typename T = std::string>
+struct max_length {
+    int max;
+
+    min_length(int max) : min(max) {}
+
+    bool operator()(const T& value) const {
+        return value.length() >= min;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " has a maximum length of '" + __detail::to_string_generic(min)
+                   + "' (input: " + __detail::to_string_generic(value)
+                   + ", length: " + __detail::to_string_generic(value.length()) + ")";
+    }
+};
+
+template <typename T = std::string>
+struct length_range {
+    T min;
+    T max;
+    bool ex;
+
+    length_range(T min_, T max_, bool exclusive = false) : min(min_), max(max_) : ex(exclusive) {}
+
+    bool operator()(const T& value) const {
+        size_t len = value.length();
+        return ex ? len > min && len < max : len >= min && len <= max;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must within the length range [" + __detail::to_string_generic(min)
+                   + ", " + __detail::to_string_generic(max)
+                   + "]" + (ex ? " exclusive " : "inclusive ")
+                   + "(input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T = std::string>
+struct starts_with {
+    T s;
+
+    starts_with(T str) : s(str) {}
+
+    bool operator()(const T& value) const {
+        return value.size() >= s.size() && value.compare(0, s.size(), s) == 0;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must start with '" + __detail::to_string_generic(s)
+                   + "' (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
+template <typename T = std::string>
+struct ends_with {
+    T s;
+
+    starts_with(T str) : s(str) {}
+
+    bool operator()(const T& value) const {
+        if (value.length() >= s.length()) {
+            return (value.compare(value.length() - s.length(), s.length(), s));
+        }
+        return false;
+    }
+
+    std::string message(const std::string& opt, const T& value) const {
+        return opt + " must end with '" + __detail::to_string_generic(s)
+                   + "' (input: " + __detail::to_string_generic(value) + ")";
+    }
+};
+
 template <typename T = std::string>
 struct one_of {
     std::vector<T> values;
@@ -2574,35 +2870,51 @@ public:
 
     std::vector<PositionalInfo> positionals;
 
-    Command(const std::string& n) : name(n) {}
+    Command(const std::string& n)
+        LINEA_CONTRACT_PRE(!n.empty())
+    : name(n) {}
 
-    Command(const std::string& n, const std::string& d) : name(n), description(d) {}
+    Command(const std::string& n, const std::string& d)
+        LINEA_CONTRACT_PRE(!n.empty())
+    : name(n), description(d) {}
 
     template <typename T>
-    Option<T>& option(const std::string& name, T& var) {
+    Option<T>& option(const std::string& name, T& var)
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         return register_option(std::make_unique<Option<T>>(name, var));
     }
 
     template <typename T>
-    Option<T>& option(const std::string& name) {
+    Option<T>& option(const std::string& name)
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         return register_option(std::make_unique<Option<T>>(name));
     }
 
     template <typename T>
-    Option<T>& argument(const std::string& name, T& var) {
+    Option<T>& argument(const std::string& name, T& var)
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         return register_positional(name, std::make_unique<Option<T>>(name, var));
     }
 
     template <typename T>
-    Option<T>& argument(const std::string& name) {
+    Option<T>& argument(const std::string& name)
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         return register_positional(name, std::make_unique<Option<T>>(name));
     }
 
-    Flag& flag(const std::string& name, bool& var) {
+    Flag& flag(const std::string& name, bool& var)
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         return register_option(std::make_unique<Flag>(name, var));
     }
 
-    Flag& flag(const std::string& name) {
+    Flag& flag(const std::string& name)
+        LINEA_CONTRACT_PRE(!name.empty())
+    {
         return register_option(std::make_unique<Flag>(name));
     }
 
@@ -2641,7 +2953,9 @@ public:
         return *this;
     }
 
-    void print_help(const std::string& app_name) {
+    void print_help(const std::string& app_name)
+        LINEA_CONTRACT_PRE(!app_name.empty())
+    {
         std::cout << app_name << " " << name;
         if (!description.empty()) {
             std::cout << " - " << description;
@@ -2741,15 +3055,17 @@ private:
         static_assert(
             std::is_same<T, Args>::value ||
             __detail::has_bind_v<T> ||
-            std::is_constructible<T, const Args&>::value,
+            std::is_constructible<T, const Args&>::value ||
+            __detail::is_reflection_bindable_v<T>,
             "linea::Command::run(): Cannot construct handler argument.\n"
             "Provide one of:\n"
             " - []()\n"
             " - [](linea::Args)\n"
-            " - [](T) where T has:\n"
-            "     * T::bind(T& Args)\n"
-            "     * or constructor T(Args)\n"
-            "     * or .bind<T>() on command"
+            " - [](T) where T has T::bind(T&, Args)\n"
+            " - [](T) where T is constructible from Args\n"
+#if LINEA_INT_REFLECTION
+            " - [](T) where T is a reflectable struct\n"
+#endif
         );
 
         return __detail::argument_resolver<T, Args>::resolve(args);
@@ -2837,7 +3153,10 @@ public:
 
     App(const std::string& n = "", const std::string& desc = "") : name(n), description(desc) {}
 
-    Command& command(const std::string& name) {
+    Command& command(const std::string& name)
+        LINEA_CONTRACT_PRE(!name.empty())
+        LINEA_CONTRACT_PRE(!command_map.contains(name))
+    {
         auto cmd = std::make_unique<Command>(name);
         auto* ptr = cmd.get();
         commands.push_back(std::move(cmd));
@@ -2859,7 +3178,9 @@ public:
         return ec;
     }
 
-    void print_help(const char* n) {
+    void print_help(const char* n)
+        LINEA_CONTRACT_PRE(!n.empty())
+    {
         if (!name.empty()) {
             std::cout << name;
         } else {
@@ -3134,7 +3455,7 @@ int getch() {
     if (read(STDIN_FILENO, &c, 1) == 1) {
         return c;
     }
-    return -1s
+    return -1;
 }
 #endif
 
