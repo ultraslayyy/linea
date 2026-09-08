@@ -313,23 +313,23 @@ namespace __detail {
 // Version specific polyfills
 #if LINEA_CPP17
 
-template <typename... Ts>
+template <class... Ts>
 using void_t = std::void_t<Ts...>;
 
 using in_place_t = std::in_place_t;
 
 using std::in_place;
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 using invoke_result = std::invoke_result<F, Args...>;
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 using invoke_result_t = std::invoke_result_t<F, Args...>;
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 using is_invocable = std::is_invocable<F, Args...>;
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 inline constexpr bool is_invocable_v = std::is_invocable_v<F, Args...>;
 
 using string_view = std::string_view;
@@ -338,7 +338,7 @@ using any = std::any;
 
 using std::any_cast;
 
-template <typename T>
+template <class T>
 using optional = std::optional<T>;
 
 struct nullopt_t {};
@@ -356,7 +356,7 @@ using std::clamp;
 
 #else
 
-template <typename...>
+template <class...>
 using void_t = void;
 
 struct in_place_t {
@@ -367,63 +367,63 @@ constexpr in_place_t in_place{};
 
 /* Invoke stuff */
 
-template <typename T>
+template <class T>
 struct is_reference_wrapper : std::false_type {};
 
-template <typename T>
+template <class T>
 struct is_reference_wrapper<std::reference_wrapper<T>> : std::true_type {};
 
 // Member-function invoke
-template <typename MemFn, typename T, typename... Args>
+template <class MemFn, class T, class... Args>
 auto invoke_impl(MemFn pmf, T&& obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value && !is_reference_wrapper<typename std::decay<T>::type>::value && !std::is_pointer<typename std::decay<T>::type>::value, decltype((std::forward<T>(obj).*pmf)(std::forward<Args>(args)...))>::type;
 
-template <typename MemFn, typename T, typename... Args>
+template <class MemFn, class T, class... Args>
 auto invoke_impl(MemFn pmf, std::reference_wrapper<T> obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value, decltype((obj.get().*pmf)(std::forward<Args>(args)...))>::type;
 
-template <typename MemFn, typename T, typename... Args>
+template <class MemFn, class T, class... Args>
 auto invoke_impl(MemFn pmf, T* obj, Args&&... args) -> typename std::enable_if<std::is_member_function_pointer<MemFn>::value, decltype(((*obj).*pmf)(std::forward<Args>(args)...))>::type;
 
 // Member-data invoke
-template <typename MemPtr, typename T>
+template <class MemPtr, class T>
 auto invoke_impl(MemPtr pmd, T&& obj) -> typename std::enable_if<std::is_member_object_pointer<MemPtr>::value && !is_reference_wrapper<typename std::decay<T>::type>::value && !std::is_pointer<typename std::decay<T>::type>::value, decltype(std::forward<T>(obj).*pmd)>::type;
 
-template <typename MemPtr, typename T>
+template <class MemPtr, class T>
 auto invoke_impl(MemPtr pmd, std::reference_wrapper<T> obj) -> typename std::enable_if<std::is_member_object_pointer<MemPtr>::value, decltype(obj.get().*pmd)>::type;
 
-template <typename MemPtr, typename T>
+template <class MemPtr, class T>
 auto invoke_impl(MemPtr pmd, T* obj) -> typename std::enable_if<std::is_member_object_pointer<MemPtr>::value, decltype((*obj).*pmd)>::type;
 
 // Ordinary invoke
-template <typename F, typename... Args>
+template <class F, class... Args>
 auto invoke_impl(F&& f, Args&&... args) -> typename std::enable_if<!std::is_member_function_pointer<typename std::decay<F>::type>::value && !std::is_member_object_pointer<typename std::decay<F>::type>::value, decltype(std::forward<F>(f)(std::forward<Args>(args)...))>::type;
 
 // invoke_result
-template <typename Void, typename F, typename... Args>
+template <class Void, class F, class... Args>
 struct invoke_result_impl {};
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 struct invoke_result_impl<decltype(void(invoke_impl(std::declval<F>(), std::declval<Args>()...))), F, Args...> {
     using type = decltype(invoke_impl(std::declval<F>(), std::declval<Args>()...));
 };
 
 // invoke_result
-template <typename F, typename... Args>
+template <class F, class... Args>
 struct invoke_result : invoke_result_impl<void, F, Args...> {};
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 using invoke_result_t = typename invoke_result<F, Args...>::type;
 
 // is_invocable
-template <typename Void, typename F, typename... Args>
+template <class Void, class F, class... Args>
 struct is_invocable_impl : std::false_type {};
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 struct is_invocable_impl<typename std::enable_if<true, decltype(void(invoke_impl(std::declval<F>(), std::declval<Args>()...)))>::type, F, Args...> : std::true_type {};
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 struct is_invocable : is_invocable_impl<void, F, Args...> {};
 
-template <typename F, typename... Args>
+template <class F, class... Args>
 LINEA_INLINE constexpr bool is_invocable_v = is_invocable<F, Args...>::value;
 
 // string_view
@@ -473,11 +473,11 @@ public:
 
 class any;
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_reference<T>::value, T*>::type
 any_cast(any* a) noexcept;
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_reference<T>::value, const T*>::type
 any_cast(const any* a) noexcept;
 
@@ -489,7 +489,7 @@ public:
 
     any(any&& other) noexcept : ptr(std::move(other.ptr)) {}
 
-    template <typename T>
+    template <class T>
     any(T&& value) : ptr(new holder<typename std::decay<T>::type>(std::forward<T>(value))) {}
 
     ~any() = default;
@@ -509,7 +509,7 @@ public:
         return *this;
     }
 
-    template <typename T, typename U = typename std::decay<T>::type, typename std::enable_if<!std::is_same<U, any>::value && std::is_copy_constructible<U>::value>::type* = nullptr>
+    template <class T, class U = typename std::decay<T>::type, typename std::enable_if<!std::is_same<U, any>::value && std::is_copy_constructible<U>::value>::type* = nullptr>
     any& operator=(T&& value) {
         any temp(std::forward<T>(value));
         swap(temp);
@@ -539,7 +539,7 @@ private:
         virtual const std::type_info& type() const noexcept = 0;
     };
 
-    template <typename T>
+    template <class T>
     struct holder : placeholder {
         T value;
 
@@ -558,19 +558,19 @@ private:
 
     std::unique_ptr<placeholder> ptr;
 
-    template <typename T>
+    template <class T>
     using decay_t = typename std::decay<T>::type;
 
-    template <typename T>
+    template <class T>
     friend typename std::enable_if<!std::is_reference<T>::value, T*>::type
     any_cast(any*) noexcept;
 
-    template <typename T>
+    template <class T>
     friend typename std::enable_if<!std::is_reference<T>::value, const T*>::type
     any_cast(const any*) noexcept;
 };
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_reference<T>::value, T*>::type
 any_cast(any* a) noexcept {
     if (!a || a->ptr->type() != typeid(T)) {
@@ -580,7 +580,7 @@ any_cast(any* a) noexcept {
     return &static_cast<any::holder<T>*>(a->ptr.get())->value;
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_reference<T>::value, const T*>::type
 any_cast(const any* a) noexcept {
     if (!a || a->ptr->type() != typeid(T)) {
@@ -590,7 +590,7 @@ any_cast(const any* a) noexcept {
     return &static_cast<const any::holder<T>*>(a->ptr.get())->value;
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_reference<T>::value, T&>::type
 any_cast(any& a) {
     T* result = any_cast<T>(&a);
@@ -602,7 +602,7 @@ any_cast(any& a) {
     return *result;
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_reference<T>::value, const T&>::type
 any_cast(const any& a) {
     const T* result = any_cast<T>(&a);
@@ -614,7 +614,7 @@ any_cast(const any& a) {
     return *result;
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_reference<T>::value, T>::type
 any_cast(any&& a) {
     T* result = any_cast<T>(&a);
@@ -626,7 +626,7 @@ any_cast(any&& a) {
     return std::move(*result);
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_reference<T>::value, T>::type
 any_cast(const any&& a) {
     const T* result = any_cast<T>(&a);
@@ -638,7 +638,7 @@ any_cast(const any&& a) {
     return std::move(*result);
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<std::is_lvalue_reference<T>::value, T>::type
 any_cast(any& a) {
     typedef typename std::remove_reference<T>::type U;
@@ -652,7 +652,7 @@ any_cast(any& a) {
     return *result;
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<std::is_lvalue_reference<T>::value, T>::type
 any_cast(const any& a) {
     typedef typename std::remove_reference<T>::type U;
@@ -673,7 +673,7 @@ struct nullopt_t {
 
 constexpr nullopt_t nullopt{0};
 
-template <typename T>
+template <class T>
 class optional {
 public:
     using value_type = T;
@@ -690,7 +690,7 @@ public:
         engaged_ = true;
     }
 
-    template <typename... Args, typename std::enable_if<std::is_constructible<T, Args&&...>::value, int>::type = 0>
+    template <class... Args, typename std::enable_if<std::is_constructible<T, Args&&...>::value, int>::type = 0>
     explicit optional(in_place_t, Args&&... args) : engaged_(false) {
         new (&storage_) T(std::forward<Args>(args)...);
         engaged_ = true;
@@ -828,12 +828,12 @@ public:
         return ptr();
     }
 
-    template <typename U>
+    template <class U>
     T value_or(U&& default_value) const & {
         return engaged_ ? *ptr() : static_cast<T>(std::forward<U>(default_value));
     }
 
-    template <typename U>
+    template <class U>
     T value_or(U&& default_value) && {
         return engaged_ ? std::move(*ptr()) : static_cast<T>(std::forward<U>(default_value));
     }
@@ -845,7 +845,7 @@ public:
         }
     }
 
-    template <typename... Args>
+    template <class... Args>
     T& emplace(Args&&... args) {
         reset();
         new (&storage_) T(std::forward<Args>(args)...);
@@ -885,7 +885,7 @@ private:
     }
 };
 
-template <typename T>
+template <class T>
 bool operator==(const optional<T>& a, const optional<T>& b) {
     if (a.has_value() != b.has_value()) {
         return false;
@@ -893,27 +893,27 @@ bool operator==(const optional<T>& a, const optional<T>& b) {
     return !a.has_value() || *a == *b;
 }
 
-template <typename T>
+template <class T>
 bool operator!=(const optional<T>& a, const optional<T>& b) {
     return !(a == b);
 }
 
-template <typename T>
+template <class T>
 bool operator==(const optional<T>& a, nullopt_t) {
     return !a.has_value();
 }
 
-template <typename T>
+template <class T>
 bool operator==(nullopt_t, const optional<T>& a) {
     return !a.has_value();
 }
 
-template <typename T>
+template <class T>
 bool operator!=(const optional<T>& a, nullopt_t) {
     return a.has_value();
 }
  
-template <typename T>
+template <class T>
 bool operator!=(nullopt_t, const optional<T>& a) {
     return a.has_value();
 }
@@ -945,7 +945,7 @@ inline bool exists(const path& p) {
 } // namespace filesystem
 
 // misc
-template <typename T>
+template <class T>
 constexpr const T& clamp(const T& value, const T& lo, const T& hi) {
     return value < lo ? lo : (hi < value ? hi : value);
 }
@@ -956,7 +956,7 @@ constexpr const T& clamp(const T& value, const T& lo, const T& hi) {
 #ifdef LINEA_INT_REFLECTION
 namespace reflection {
 
-template <typename T>
+template <class T>
 consteval bool is_bindable() {
     if constexpr (!std::is_class_v<T>) {
         return false;
@@ -968,10 +968,10 @@ consteval bool is_bindable() {
     }
 }
 
-template <typename T>
+template <class T>
 inline constexpr bool is_bindable_v = is_bindable<T>();
 
-template <typename T, typename Args>
+template <class T, class Args>
 T bind(const Args& args) {
     T result{};
 
@@ -987,33 +987,33 @@ T bind(const Args& args) {
 #endif
 
 // Macro helpers
-template <typename T, typename MemberT>
+template <class T, class MemberT>
 struct Field {
     const char* name;
     MemberT::*member;
 };
 
 //
-template <typename T>
+template <class T>
 struct function_traits;
 
-template <typename T>
+template <class T>
 struct function_traits : function_traits<decltype(&T::operator())> {};
 
-template <typename ClassType, typename ReturnType, typename Arg>
+template <class ClassType, class ReturnType, class Arg>
 struct function_traits<ReturnType(ClassType::*)(Arg) const> {
     using arg_type = std::decay_t<Arg>;
 };
 
-template <typename ReturnType, typename Arg>
+template <class ReturnType, class Arg>
 struct function_traits<ReturnType(*)(Arg)> {
     using arg_type = Arg;
 };
 
-template <typename Fn>
+template <class Fn>
 using function_arg_t = typename function_traits<Fn>::arg_type;
 
-template <typename T>
+template <class T>
 std::string pretty_type() {
     return typeid(T).name();
 }
@@ -1047,34 +1047,34 @@ static inline std::future<void> async_deferred() {
     return p.get_future();
 }
 
-template <typename T, typename = void>
+template <class T, class = void>
 struct is_future : std::false_type {};
 
-template <typename T>
+template <class T>
 struct is_future<std::future<T>> : std::true_type {};
 
-template <typename T>
+template <class T>
 LINEA_INLINE constexpr bool is_future_v = is_future<T>::value;
 
 // Command helpers
-template <typename T, typename = void>
+template <class T, class = void>
 struct has_bind : std::false_type {};
 
-template <typename T>
+template <class T>
 struct has_bind<T, void_t<decltype(T::bind(std::declval<T&>(), std::declval<const Args&>()))>> : std::true_type {};
 
-template <typename T>
+template <class T>
 LINEA_INLINE constexpr bool has_bind_v = has_bind<T>::value;
 
-template <typename T>
+template <class T>
 struct is_reflection_bindable : std::false_type {};
 
 #if LINEA_CPP26
-template <typename T>
+template <class T>
 struct is_reflection_bindable<T> : std::integral_constant<bool, reflection::is_bindable_v<T>> {};
 #endif
 
-template <typename T>
+template <class T>
 LINEA_INLINE constexpr bool is_reflection_bindable_v = is_reflection_bindable<T>::value;
 
 // AutoRegisteredCommand helpers
@@ -1122,45 +1122,45 @@ std::string get_command_description() {
 }
 */
 
-template <typename T, typename = void>
+template <class T, class = void>
 struct has_constexpr_name : std::false_type {};
 
-template <typename T>
+template <class T>
 struct has_constexpr_name<T, void_t<decltype(T::command_name)>>
     : std::is_convertible<decltype(T::command_name), const char*> {};
 
-template <typename T>
+template <class T>
 LINEA_INLINE constexpr bool has_constexpr_name_v = has_constexpr_name<T>::value;
 
-template <typename T, typename = void>
+template <class T, class = void>
 struct has_function_name : std::false_type {};
 
-template <typename T>
+template <class T>
 struct has_function_name<T, void_t<decltype(std::declval<T>().command_name())>> 
     : std::is_convertible<decltype(std::declval<T>().command_name()), std::string> {};
 
-template <typename T>
+template <class T>
 LINEA_INLINE constexpr bool has_function_name_v = has_function_name<T>::value;
 
-template <typename T, typename = void>
+template <class T, class = void>
 struct has_constexpr_description : std::false_type {};
 
-template <typename T>
+template <class T>
 struct has_constexpr_description<T, void_t<decltype(T::command_description)>> 
     : std::is_convertible<decltype(T::command_description), const char*> {};
 
-template <typename T>
+template <class T>
 LINEA_INLINE constexpr bool has_constexpr_description_v = has_constexpr_description<T>::value;
 
 
-template <typename T, typename = void>
+template <class T, class = void>
 struct has_function_description : std::false_type {};
 
-template <typename T>
+template <class T>
 struct has_function_description<T, void_t<decltype(std::declval<T>().command_description())>> 
     : std::is_convertible<decltype(std::declval<T>().command_description()), std::string> {};
 
-template <typename T>
+template <class T>
 LINEA_INLINE constexpr bool has_function_description_v = has_function_description<T>::value;
 
 /*
@@ -1187,51 +1187,51 @@ std::string get_command_description() {
 } 
 */
 
-template <typename T>
+template <class T>
 typename std::enable_if<has_constexpr_name_v<T>, std::string>::type
 get_command_name() {
     return T::command_name;
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!has_constexpr_name_v<T> && has_function_name_v<T>, std::string>::type
 get_command_name() {
     return T::command_name();
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!has_constexpr_name_v<T> && !has_function_name_v<T>, std::string>::type
 get_command_name() {
     static_assert(sizeof(T) == 0, "Command must define command_name");
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<has_constexpr_description_v<T>, std::string>::type
 get_command_description() {
     return T::command_description;
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!has_constexpr_description_v<T> && has_function_description_v<T>, std::string>::type
 get_command_description() {
     return T::command_description();
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!has_constexpr_description_v<T> && !has_function_description_v<T>, std::string>::type
 get_command_description() {
     return "";
 }
 
 // helpers for something I forgor
-template <typename T, typename Args, typename = void>
+template <class T, class Args, class = void>
 struct argument_resolver {
     static T resolve(const Args& args) {
         return args;
     }
 };
 
-template <typename T, typename Args>
+template <class T, class Args>
 struct argument_resolver<T, Args, std::enable_if<!std::is_same<T, Args>::value && has_bind_v<T>>> {
     static T resolve(const Args& args) {
         T obj{};
@@ -1240,7 +1240,7 @@ struct argument_resolver<T, Args, std::enable_if<!std::is_same<T, Args>::value &
     }
 };
 
-template <typename T, typename Args>
+template <class T, class Args>
 struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind_v<T> && std::is_constructible<T, const Args&>::value>> {
     static T resolve(const Args& args) {
         return T(args);
@@ -1248,7 +1248,7 @@ struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value
 };
 
 #ifdef LINEA_INT_REFLECTION
-template <typename T, typename Args>
+template <class T, class Args>
 struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind_v<T> && !std::is_constructible<T, const Args&>::value && reflection::is_bindable_v<T>>> {
     static T resolve(const Args& args) {
         return reflection::bind<T>(args);
@@ -2118,7 +2118,7 @@ public:
         if (has_default) os << "(Default: <unknown type>)";
     }
 
-    template <typename T>
+    template <class T>
     T get_value_typed() const {
         auto val = get_value();
         try {
@@ -2135,7 +2135,7 @@ public:
     virtual ~OptionBase() = default;
 };
 
-template <typename T>
+template <class T>
 class Positional;
 
 struct PositionalInfo {
@@ -2149,7 +2149,7 @@ public:
     const std::unordered_map<std::string, OptionBase*>* options;
     const std::vector<PositionalInfo>* positionals;
 
-    template <typename T>
+    template <class T>
     T get(const std::string& name) const
         LINEA_CONTRACT_PRE(!name.empty())
     {
@@ -2166,7 +2166,7 @@ public:
         }
     }
 
-    template <typename T>
+    template <class T>
     linea::__detail::optional<T> try_get(const std::string& name) const
         LINEA_CONTRACT_PRE(!name.empty())
     {
@@ -2180,7 +2180,7 @@ public:
         }
     }
 
-    template <typename T>
+    template <class T>
     T positional(size_t index) const {
         if (index >= positionals->size()) {
             throw std::runtime_error("Positional index out of range");
@@ -2189,7 +2189,7 @@ public:
         return positionals->at(index).opt->template get_value_typed<T>();
     }
 
-    template <typename T>
+    template <class T>
     T positional(const std::string& name) const
         LINEA_CONTRACT_PRE(!name.empty())
     {
@@ -2291,7 +2291,7 @@ protected:
 };
 
 //template <typename T>
-template <typename T, typename = typename std::enable_if<std::is_base_of<CommandController, T>::value && !std::is_same<CommandController, T>::value>::type>
+template <class T, class = typename std::enable_if<std::is_base_of<CommandController, T>::value && !std::is_same<CommandController, T>::value>::type>
 struct ControllerRegistrar {
     ControllerRegistrar(const std::string& name, const std::string& desc) {
         register_it(name, desc);
@@ -2326,7 +2326,7 @@ private:
     }
 };
 
-template <typename T>
+template <class T>
 class Option : public OptionBase {
 public:
     T value;
@@ -2384,7 +2384,7 @@ public:
      * .check(linea::validators::file_exists<std::string>(), "Custom message")
      * ```
      */
-    template <typename Validator>
+    template <class Validator>
     Option& check(Validator v, std::string msg = "") {
         validators.emplace_back(
             [v = std::move(v)](const T& x) mutable {
@@ -2433,7 +2433,7 @@ private:
     }
 };
 
-template <typename T>
+template <class T>
 class Positional : public Option<T> {
 public:
     bool required = false;
@@ -2514,12 +2514,12 @@ namespace validators {
 
 namespace __detail {
 
-template <typename T>
+template <class T>
 auto to_string_impl(const T& v, int) -> decltype(std::string(v), std::string()) {
     return std::to_string(v);
 }
 
-template <typename T>
+template <class T>
 std::string to_string_impl(const T& v, ...) {
     return "<unprintable>";
 }
@@ -2533,13 +2533,13 @@ std::string to_string_generic(const T& v) {
     }
 } */
 
-template <typename T>
+template <class T>
 typename std::enable_if<std::is_convertible<T, std::string>::value, std::string>::type
 to_string_generic(const T& v) {
     return v;
 }
 
-template <typename T>
+template <class T>
 typename std::enable_if<!std::is_convertible<T, std::string>::value, std::string>::type
 to_string_generic(const T& v) {
     return to_string_impl(v, 0);
@@ -2548,7 +2548,7 @@ to_string_generic(const T& v) {
 } // namespace __detail
 
 // FS
-template <typename T = std::string>
+template <class T = std::string>
 struct file_exists {
     bool operator()(const T& value) const {
         return linea::__detail::filesystem::exists(linea::__detail::filesystem::path(value));
@@ -2560,7 +2560,7 @@ struct file_exists {
 };
 
 // Numerical
-template <typename T = int>
+template <class T = int>
 struct is_negative {
     bool inc_zero = false;
 
@@ -2576,7 +2576,7 @@ struct is_negative {
     }
 };
 
-template <typename T = int>
+template <class T = int>
 struct is_positive {
     bool inc_zero = false;
 
@@ -2592,7 +2592,7 @@ struct is_positive {
     }
 };
 
-template <typename T = int>
+template <class T = int>
 struct is_even {
     bool operator()(const T& value) const {
         return (value % 2) == 0;
@@ -2603,7 +2603,7 @@ struct is_even {
     }
 };
 
-template <typename T = int>
+template <class T = int>
 struct is_odd {
     bool operator()(const T& value) const {
         return (value % 2) == 1;
@@ -2614,7 +2614,7 @@ struct is_odd {
     }
 };
 
-template <typename T = int>
+template <class T = int>
 struct max {
     T max;
 
@@ -2630,7 +2630,7 @@ struct max {
     }
 };
 
-template <typename T = int>
+template <class T = int>
 struct min {
     T min;
 
@@ -2646,7 +2646,7 @@ struct min {
     }
 };
 
-template <typename T = int>
+template <class T = int>
 struct range {
     T min;
     T max;
@@ -2666,7 +2666,7 @@ struct range {
     }
 };
 
-template <typename T = int>
+template <class T = int>
 struct is_multiple_of {
     T mult;
 
@@ -2684,7 +2684,7 @@ struct is_multiple_of {
     }
 };
 
-template <typename T = float>
+template <class T = float>
 struct is_whole {
     bool operator()(const T& value) const {
         return static_cast<long long>(value) == value;
@@ -2696,7 +2696,7 @@ struct is_whole {
 };
 
 // Strings
-template <typename T = std::string>
+template <class T = std::string>
 struct non_empty {
     bool operator()(const T& value) const {
         return !value.empty();
@@ -2707,7 +2707,7 @@ struct non_empty {
     }
 };
 
-template <typename T = std::string>
+template <class T = std::string>
 struct empty {
     bool operator()(const T& value) const {
         return value.empty();
@@ -2718,7 +2718,7 @@ struct empty {
     }
 };
 
-template <typename T = std::string>
+template <class T = std::string>
 struct min_length {
     int min;
 
@@ -2735,7 +2735,7 @@ struct min_length {
     }
 };
 
-template <typename T = std::string>
+template <class T = std::string>
 struct max_length {
     int max;
 
@@ -2752,7 +2752,7 @@ struct max_length {
     }
 };
 
-template <typename T = std::string>
+template <class T = std::string>
 struct length_range {
     T min;
     T max;
@@ -2773,7 +2773,7 @@ struct length_range {
     }
 };
 
-template <typename T = std::string>
+template <class T = std::string>
 struct starts_with {
     T s;
 
@@ -2789,7 +2789,7 @@ struct starts_with {
     }
 };
 
-template <typename T = std::string>
+template <class T = std::string>
 struct ends_with {
     T s;
 
@@ -2808,7 +2808,7 @@ struct ends_with {
     }
 };
 
-template <typename T = std::string>
+template <class T = std::string>
 struct one_of {
     std::vector<T> values;
 
@@ -2832,7 +2832,7 @@ struct one_of {
     }
 };
 
-template <typename T = std::string>
+template <class T = std::string>
 struct not_one_of {
     one_of<T> o;
 
@@ -2878,28 +2878,28 @@ public:
         LINEA_CONTRACT_PRE(!n.empty())
     : name(n), description(d) {}
 
-    template <typename T>
+    template <class T>
     Option<T>& option(const std::string& name, T& var)
         LINEA_CONTRACT_PRE(!name.empty())
     {
         return register_option(std::make_unique<Option<T>>(name, var));
     }
 
-    template <typename T>
+    template <class T>
     Option<T>& option(const std::string& name)
         LINEA_CONTRACT_PRE(!name.empty())
     {
         return register_option(std::make_unique<Option<T>>(name));
     }
 
-    template <typename T>
+    template <class T>
     Option<T>& argument(const std::string& name, T& var)
         LINEA_CONTRACT_PRE(!name.empty())
     {
         return register_positional(name, std::make_unique<Option<T>>(name, var));
     }
 
-    template <typename T>
+    template <class T>
     Option<T>& argument(const std::string& name)
         LINEA_CONTRACT_PRE(!name.empty())
     {
@@ -2945,7 +2945,7 @@ public:
      *     });
      * ```
      */
-    template <typename Fn>
+    template <class Fn>
     Command& run(Fn fn) {
         action = [this, fn](const Args& args) -> std::future<void> {
             return this->invoke(fn, args);
@@ -3017,7 +3017,7 @@ public:
 private:
     std::function<__detail::any(const Args&)> binder;
 
-    template <typename T>
+    template <class T>
     T& register_option(std::unique_ptr<T> opt) {
         static_assert(std::is_base_of<OptionBase, T>::value);
 
@@ -3034,7 +3034,7 @@ private:
         return *ptr;
     }
 
-    template <typename T>
+    template <class T>
     auto& register_positional(const std::string& name, std::unique_ptr<Option<T>> opt) {
         Option<T>* ptr = opt.get();
         positionals.push_back({name, ptr, false});
@@ -3042,7 +3042,7 @@ private:
         return *ptr;
     }
 
-    template <typename T>
+    template <class T>
     T resolve(const Args& args) {
         if (binder) {
             auto val = binder(args);
@@ -3098,45 +3098,45 @@ private:
     }
     */
 
-    template <typename Fn>
+    template <class Fn>
     typename std::enable_if<__detail::is_future_v<typename __detail::invoke_result_t<Fn, const Args&>>, std::future<void>>::type
     invoke_with_args(Fn& fn, const Args& args) {
         return fn(args);
     }
 
-    template <typename Fn>
+    template <class Fn>
     typename std::enable_if<!__detail::is_future_v<typename __detail::invoke_result_t<Fn, const Args&>>, std::future<void>>::type
     invoke_with_args(Fn& fn, const Args& args) {
         fn(args);
         return __detail::async_deferred();
     }
 
-    template <typename Fn>
+    template <class Fn>
     typename std::enable_if<__detail::is_future_v<typename __detail::invoke_result<Fn>::type>, std::future<void>>::type
     invoke_without_args(Fn& fn) {
         return fn();
     }
 
-    template <typename Fn>
+    template <class Fn>
     typename std::enable_if<!__detail::is_future_v<typename __detail::invoke_result<Fn>::type>, std::future<void>>::type
     invoke_without_args(Fn& fn) {
         fn();
         return __detail::async_deferred();
     }
 
-    template <typename Fn>
+    template <class Fn>
     typename std::enable_if<__detail::is_invocable_v<Fn, const Args&>, std::future<void>>::type
     invoke(Fn& fn, const Args& args) {
         return invoke_with_args(fn, args);
     }
 
-    template <typename Fn>
+    template <class Fn>
     typename std::enable_if<!__detail::is_invocable_v<Fn, const Args&> && __detail::is_invocable_v<Fn>, std::future<void>>::type
     invoke(Fn& fn, const Args& args) {
         return invoke_without_args(fn);
     }
 
-    template <typename Fn>
+    template <class Fn>
     typename std::enable_if<!__detail::is_invocable_v<Fn, const Args&> && !__detail::is_invocable_v<Fn>, std::future<void>>::type
     invoke(Fn& fn, const Args& args) {
         using T = typename __detail::function_arg_t<Fn>::type;
