@@ -272,6 +272,7 @@
         __VA_ARGS__ \
     }
 
+#if LINEA_CPP14
 /**
  * @brief
  * Allows:
@@ -298,6 +299,7 @@
 
 #define LINEA_OPTIONS(TYPE, ...) \
     static constexpr auto linea_fields = std::make_tuple(__VA_ARGS__);
+#endif
 
 namespace linea {
 
