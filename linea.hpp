@@ -301,8 +301,6 @@
 
 namespace linea {
 
-#pragma region
-
 class Args;
 
 /**
@@ -329,9 +327,6 @@ using invoke_result_t = std::invoke_result_t<F, Args...>;
 template <class F, class... Args>
 using is_invocable = std::is_invocable<F, Args...>;
 
-template <class F, class... Args>
-inline constexpr bool is_invocable_v = std::is_invocable_v<F, Args...>;
-
 using string_view = std::string_view;
 
 using any = std::any;
@@ -353,6 +348,8 @@ using std::filesystem::exists;
 }
 
 using std::clamp;
+
+using std::make_unique;
 
 #else
 
@@ -422,9 +419,6 @@ struct is_invocable_impl<typename std::enable_if<true, decltype(void(invoke_impl
 
 template <class F, class... Args>
 struct is_invocable : is_invocable_impl<void, F, Args...> {};
-
-template <class F, class... Args>
-LINEA_INLINE constexpr bool is_invocable_v = is_invocable<F, Args...>::value;
 
 // string_view
 class string_view {
@@ -950,6 +944,29 @@ constexpr const T& clamp(const T& value, const T& lo, const T& hi) {
     return value < lo ? lo : (hi < value ? hi : value);
 }
 
+#if LINEA_CPP14
+using std::make_unique;
+#else
+// make_unique
+template <class T, class... Args> // single objects
+typename std::enable_if<!std::is_array<T>::value, std::unique_ptr<T>>::type
+make_unique(Args&&... args) {
+    return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
+}
+
+template <class T> // unbounded arrays
+typename std::enable_if<std::is_array<T>::value && std::extent<T>::value == 0, std::unique_ptr<T>>::type
+make_unique(std::size_t size) {
+    using U = typename std::remove_extent<T>::type;
+
+    return std::unique_ptr<T>(new U[size]());
+}
+
+template <class T, class... Args> // bounded arrays, not allowed
+typename std::enable_if<std::extent<T>::value != 0, void>::type
+make_unique(Args&&...) = delete;
+#endif
+
 #endif
 
 // C++26 reflection
@@ -1002,7 +1019,7 @@ struct function_traits : function_traits<decltype(&T::operator())> {};
 
 template <class ClassType, class ReturnType, class Arg>
 struct function_traits<ReturnType(ClassType::*)(Arg) const> {
-    using arg_type = std::decay_t<Arg>;
+    using arg_type = typename std::decay<Arg>::type;
 };
 
 template <class ReturnType, class Arg>
@@ -1053,9 +1070,6 @@ struct is_future : std::false_type {};
 template <class T>
 struct is_future<std::future<T>> : std::true_type {};
 
-template <class T>
-LINEA_INLINE constexpr bool is_future_v = is_future<T>::value;
-
 // Command helpers
 template <class T, class = void>
 struct has_bind : std::false_type {};
@@ -1064,18 +1078,12 @@ template <class T>
 struct has_bind<T, void_t<decltype(T::bind(std::declval<T&>(), std::declval<const Args&>()))>> : std::true_type {};
 
 template <class T>
-LINEA_INLINE constexpr bool has_bind_v = has_bind<T>::value;
-
-template <class T>
 struct is_reflection_bindable : std::false_type {};
 
 #if LINEA_CPP26
 template <class T>
 struct is_reflection_bindable<T> : std::integral_constant<bool, reflection::is_bindable_v<T>> {};
 #endif
-
-template <class T>
-LINEA_INLINE constexpr bool is_reflection_bindable_v = is_reflection_bindable<T>::value;
 
 // AutoRegisteredCommand helpers
 /*
@@ -1129,18 +1137,12 @@ template <class T>
 struct has_constexpr_name<T, void_t<decltype(T::command_name)>>
     : std::is_convertible<decltype(T::command_name), const char*> {};
 
-template <class T>
-LINEA_INLINE constexpr bool has_constexpr_name_v = has_constexpr_name<T>::value;
-
 template <class T, class = void>
 struct has_function_name : std::false_type {};
 
 template <class T>
 struct has_function_name<T, void_t<decltype(std::declval<T>().command_name())>> 
     : std::is_convertible<decltype(std::declval<T>().command_name()), std::string> {};
-
-template <class T>
-LINEA_INLINE constexpr bool has_function_name_v = has_function_name<T>::value;
 
 template <class T, class = void>
 struct has_constexpr_description : std::false_type {};
@@ -1149,9 +1151,6 @@ template <class T>
 struct has_constexpr_description<T, void_t<decltype(T::command_description)>> 
     : std::is_convertible<decltype(T::command_description), const char*> {};
 
-template <class T>
-LINEA_INLINE constexpr bool has_constexpr_description_v = has_constexpr_description<T>::value;
-
 
 template <class T, class = void>
 struct has_function_description : std::false_type {};
@@ -1159,9 +1158,6 @@ struct has_function_description : std::false_type {};
 template <class T>
 struct has_function_description<T, void_t<decltype(std::declval<T>().command_description())>> 
     : std::is_convertible<decltype(std::declval<T>().command_description()), std::string> {};
-
-template <class T>
-LINEA_INLINE constexpr bool has_function_description_v = has_function_description<T>::value;
 
 /*
 template <typename T>
@@ -1188,37 +1184,37 @@ std::string get_command_description() {
 */
 
 template <class T>
-typename std::enable_if<has_constexpr_name_v<T>, std::string>::type
+typename std::enable_if<has_constexpr_name<T>::value, std::string>::type
 get_command_name() {
     return T::command_name;
 }
 
 template <class T>
-typename std::enable_if<!has_constexpr_name_v<T> && has_function_name_v<T>, std::string>::type
+typename std::enable_if<!has_constexpr_name<T>::value && has_function_name<T>::value, std::string>::type
 get_command_name() {
     return T::command_name();
 }
 
 template <class T>
-typename std::enable_if<!has_constexpr_name_v<T> && !has_function_name_v<T>, std::string>::type
+typename std::enable_if<!has_constexpr_name<T>::value && !has_function_name<T>::value, std::string>::type
 get_command_name() {
     static_assert(sizeof(T) == 0, "Command must define command_name");
 }
 
 template <class T>
-typename std::enable_if<has_constexpr_description_v<T>, std::string>::type
+typename std::enable_if<has_constexpr_description<T>::value, std::string>::type
 get_command_description() {
     return T::command_description;
 }
 
 template <class T>
-typename std::enable_if<!has_constexpr_description_v<T> && has_function_description_v<T>, std::string>::type
+typename std::enable_if<!has_constexpr_description<T>::value && has_function_description<T>::value, std::string>::type
 get_command_description() {
     return T::command_description();
 }
 
 template <class T>
-typename std::enable_if<!has_constexpr_description_v<T> && !has_function_description_v<T>, std::string>::type
+typename std::enable_if<!has_constexpr_description<T>::value && !has_function_description<T>::value, std::string>::type
 get_command_description() {
     return "";
 }
@@ -1232,7 +1228,7 @@ struct argument_resolver {
 };
 
 template <class T, class Args>
-struct argument_resolver<T, Args, std::enable_if<!std::is_same<T, Args>::value && has_bind_v<T>>> {
+struct argument_resolver<T, Args, std::enable_if<!std::is_same<T, Args>::value && has_bind<T>::value>> {
     static T resolve(const Args& args) {
         T obj{};
         T::bind(obj, args);
@@ -1241,7 +1237,7 @@ struct argument_resolver<T, Args, std::enable_if<!std::is_same<T, Args>::value &
 };
 
 template <class T, class Args>
-struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind_v<T> && std::is_constructible<T, const Args&>::value>> {
+struct argument_resolver<T, Args, typename std::enable_if<!std::is_same<T, Args>::value && !has_bind<T>::value && std::is_constructible<T, const Args&>::value>::type> {
     static T resolve(const Args& args) {
         return T(args);
     }
@@ -1249,7 +1245,7 @@ struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value
 
 #ifdef LINEA_INT_REFLECTION
 template <class T, class Args>
-struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind_v<T> && !std::is_constructible<T, const Args&>::value && reflection::is_bindable_v<T>>> {
+struct argument_resolver<T, Args, std::enable_if_t<!std::is_same<T, Args>::value && !has_bind<T>::value && !std::is_constructible<T, const Args&>::value && reflection::is_bindable_v<T>>> {
     static T resolve(const Args& args) {
         return reflection::bind<T>(args);
     }
@@ -1268,6 +1264,8 @@ HANDLE enableANSI() {
 }
 
 } // namespace __detail
+
+#pragma region
 
 namespace ANSI {
 
@@ -2141,7 +2139,9 @@ class Positional;
 struct PositionalInfo {
     std::string name;
     OptionBase* opt;
-    bool required = false;
+    bool required;
+
+    PositionalInfo(const std::string& name, OptionBase* opt = nullptr, bool required = false) : name(name), opt(opt), required(required) {}
 };
 
 class Args {
@@ -2311,15 +2311,14 @@ private:
     {
         auto& reg = CommandController::get_registry();
 
-        auto it = std::find_if(reg.begin(), reg.end(),
-            [&](const auto& r) { return r.name == name; });
+        auto it = std::find_if(reg.begin(), reg.end(), [&](const CommandController::Registration& r) { return r.name == name; });
 
         if (it == reg.end()) {
             reg.push_back({
                 name,
                 desc,
                 []() -> std::unique_ptr<CommandController> {
-                    return std::make_unique<T>();
+                    return __detail::make_unique<T>();
                 }
             });
         }
@@ -2386,12 +2385,23 @@ public:
      */
     template <class Validator>
     Option& check(Validator v, std::string msg = "") {
+#if LINEA_CPP14
         validators.emplace_back(
             [v = std::move(v)](const T& x) mutable {
                 return v(x);
             },
             msg.empty() ? v.message(long_name, value) : msg
         );
+#else
+        auto ptr = std::make_shared<decltype(v)>(std::move(v));
+
+        validators.emplace_back(
+            [ptr](const T& x) mutable {
+                return (*ptr)(x);
+            },
+            msg.empty() ? v.message(long_name, value) : msg
+        );
+#endif
         return *this;
     }
 
@@ -2652,7 +2662,7 @@ struct range {
     T max;
     bool ex;
 
-    range(T min_, T max_, bool exclusive = false) : min(min_), max(max_) : ex(exclusive) {}
+    range(T min_, T max_, bool exclusive = false) : min(min_), max(max_), ex(exclusive) {}
 
     bool operator()(const T& value) const {
         return ex ? value > min && value < max : value >= min && value <= max;
@@ -2739,14 +2749,14 @@ template <class T = std::string>
 struct max_length {
     int max;
 
-    min_length(int max) : min(max) {}
+    max_length(int max) : max(max) {}
 
     bool operator()(const T& value) const {
-        return value.length() >= min;
+        return value.length() >= max;
     }
 
     std::string message(const std::string& opt, const T& value) const {
-        return opt + " has a maximum length of '" + __detail::to_string_generic(min)
+        return opt + " has a maximum length of '" + __detail::to_string_generic(max)
                    + "' (input: " + __detail::to_string_generic(value)
                    + ", length: " + __detail::to_string_generic(value.length()) + ")";
     }
@@ -2758,7 +2768,7 @@ struct length_range {
     T max;
     bool ex;
 
-    length_range(T min_, T max_, bool exclusive = false) : min(min_), max(max_) : ex(exclusive) {}
+    length_range(T min_, T max_, bool exclusive = false) : min(min_), max(max_), ex(exclusive) {}
 
     bool operator()(const T& value) const {
         size_t len = value.length();
@@ -2793,7 +2803,7 @@ template <class T = std::string>
 struct ends_with {
     T s;
 
-    starts_with(T str) : s(str) {}
+    ends_with(T str) : s(str) {}
 
     bool operator()(const T& value) const {
         if (value.length() >= s.length()) {
@@ -2882,40 +2892,40 @@ public:
     Option<T>& option(const std::string& name, T& var)
         LINEA_CONTRACT_PRE(!name.empty())
     {
-        return register_option(std::make_unique<Option<T>>(name, var));
+        return register_option(__detail::make_unique<Option<T>>(name, var));
     }
 
     template <class T>
     Option<T>& option(const std::string& name)
         LINEA_CONTRACT_PRE(!name.empty())
     {
-        return register_option(std::make_unique<Option<T>>(name));
+        return register_option(__detail::make_unique<Option<T>>(name));
     }
 
     template <class T>
     Option<T>& argument(const std::string& name, T& var)
         LINEA_CONTRACT_PRE(!name.empty())
     {
-        return register_positional(name, std::make_unique<Option<T>>(name, var));
+        return register_positional(name, __detail::make_unique<Option<T>>(name, var));
     }
 
     template <class T>
     Option<T>& argument(const std::string& name)
         LINEA_CONTRACT_PRE(!name.empty())
     {
-        return register_positional(name, std::make_unique<Option<T>>(name));
+        return register_positional(name, __detail::make_unique<Option<T>>(name));
     }
 
     Flag& flag(const std::string& name, bool& var)
         LINEA_CONTRACT_PRE(!name.empty())
     {
-        return register_option(std::make_unique<Flag>(name, var));
+        return register_option(__detail::make_unique<Flag>(name, var));
     }
 
     Flag& flag(const std::string& name)
         LINEA_CONTRACT_PRE(!name.empty())
     {
-        return register_option(std::make_unique<Flag>(name));
+        return register_option(__detail::make_unique<Flag>(name));
     }
 
     Command& required(bool value = true) {
@@ -3035,7 +3045,7 @@ private:
     }
 
     template <class T>
-    auto& register_positional(const std::string& name, std::unique_ptr<Option<T>> opt) {
+    Option<T>& register_positional(const std::string& name, std::unique_ptr<Option<T>> opt) {
         Option<T>* ptr = opt.get();
         positionals.push_back({name, ptr, false});
         options.push_back(std::move(opt));
@@ -3054,9 +3064,9 @@ private:
 
         static_assert(
             std::is_same<T, Args>::value ||
-            __detail::has_bind_v<T> ||
+            __detail::has_bind<T>::value ||
             std::is_constructible<T, const Args&>::value ||
-            __detail::is_reflection_bindable_v<T>,
+            __detail::is_reflection_bindable<T>::value,
             "linea::Command::run(): Cannot construct handler argument.\n"
             "Provide one of:\n"
             " - []()\n"
@@ -3074,17 +3084,17 @@ private:
     /*
     template <typename Fn>
     std::future<void> invoke(Fn& fn, const Args& args) {
-        if constexpr (__detail::is_invocable_v<Fn, const Args&>) {
+        if constexpr (__detail::is_invocable<Fn, const Args&>::value) {
             using Ret = __detail::invoke_result_t<Fn, const Args&>;
-            if constexpr (__detail::is_future_v<Ret>) {
+            if constexpr (__detail::is_future<Ret>::value) {
                 return fn(args);
             } else {
                 fn(args);
                 return __detail::async_deferred();
             }
-        } else if constexpr (__detail::is_invocable_v<Fn>) {
+        } else if constexpr (__detail::is_invocable<Fn>::value) {
             using Ret = __detail::invoke_result_t<Fn>;
-            if constexpr (__detail::is_future_v<Ret>) {
+            if constexpr (__detail::is_future<Ret>::value) {
                 return fn();
             } else {
                 fn();
@@ -3099,45 +3109,45 @@ private:
     */
 
     template <class Fn>
-    typename std::enable_if<__detail::is_future_v<typename __detail::invoke_result_t<Fn, const Args&>>, std::future<void>>::type
+    typename std::enable_if<__detail::is_future<typename __detail::invoke_result_t<Fn, const Args&>>::value, std::future<void>>::type
     invoke_with_args(Fn& fn, const Args& args) {
         return fn(args);
     }
 
     template <class Fn>
-    typename std::enable_if<!__detail::is_future_v<typename __detail::invoke_result_t<Fn, const Args&>>, std::future<void>>::type
+    typename std::enable_if<!__detail::is_future<typename __detail::invoke_result_t<Fn, const Args&>>::value, std::future<void>>::type
     invoke_with_args(Fn& fn, const Args& args) {
         fn(args);
         return __detail::async_deferred();
     }
 
     template <class Fn>
-    typename std::enable_if<__detail::is_future_v<typename __detail::invoke_result<Fn>::type>, std::future<void>>::type
+    typename std::enable_if<__detail::is_future<typename __detail::invoke_result<Fn>::type>::value, std::future<void>>::type
     invoke_without_args(Fn& fn) {
         return fn();
     }
 
     template <class Fn>
-    typename std::enable_if<!__detail::is_future_v<typename __detail::invoke_result<Fn>::type>, std::future<void>>::type
+    typename std::enable_if<!__detail::is_future<typename __detail::invoke_result<Fn>::type>::value, std::future<void>>::type
     invoke_without_args(Fn& fn) {
         fn();
         return __detail::async_deferred();
     }
 
     template <class Fn>
-    typename std::enable_if<__detail::is_invocable_v<Fn, const Args&>, std::future<void>>::type
+    typename std::enable_if<__detail::is_invocable<Fn, const Args&>::value, std::future<void>>::type
     invoke(Fn& fn, const Args& args) {
         return invoke_with_args(fn, args);
     }
 
     template <class Fn>
-    typename std::enable_if<!__detail::is_invocable_v<Fn, const Args&> && __detail::is_invocable_v<Fn>, std::future<void>>::type
+    typename std::enable_if<!__detail::is_invocable<Fn, const Args&>::value && __detail::is_invocable<Fn>::value, std::future<void>>::type
     invoke(Fn& fn, const Args& args) {
         return invoke_without_args(fn);
     }
 
     template <class Fn>
-    typename std::enable_if<!__detail::is_invocable_v<Fn, const Args&> && !__detail::is_invocable_v<Fn>, std::future<void>>::type
+    typename std::enable_if<!__detail::is_invocable<Fn, const Args&>::value && !__detail::is_invocable<Fn>::value, std::future<void>>::type
     invoke(Fn& fn, const Args& args) {
         using T = typename __detail::function_arg_t<Fn>::type;
 
@@ -3157,7 +3167,7 @@ public:
         LINEA_CONTRACT_PRE(!name.empty())
         LINEA_CONTRACT_PRE(!command_map.contains(name))
     {
-        auto cmd = std::make_unique<Command>(name);
+        auto cmd = __detail::make_unique<Command>(name);
         auto* ptr = cmd.get();
         commands.push_back(std::move(cmd));
         command_map[name] = ptr;
@@ -3464,20 +3474,25 @@ int getch() {
 class ProgressBar {
 public:
     struct Theme {
-        char fill = '#';
-        char empty = '-';
-        char left = '[';
-        char right = ']';
+        char fill;
+        char empty;
+        char left;
+        char right;
 
-        std::string fill_color = "";
-        std::string empty_color = "";
-        std::string reset_color = "\033[0m";
+        std::string fill_color;
+        std::string empty_color;
+        std::string reset_color;
+
+        Theme(char fill = '#', char empty = '-', char left = '[', char right = ']', std::string fill_color = "", std::string empty_color = "", std::string reset_color = "\033[0m")
+            : fill(fill), empty(empty), left(left), right(right), fill_color(fill_color), empty_color(empty_color), reset_color(reset_color) {}
     };
 
     struct Options {
-        bool progress_in_bar = false;
-        bool eta_enabled = true;
-        bool items_per_second = false;
+        bool progress_in_bar;
+        bool eta_enabled;
+        bool items_per_second;
+
+        Options(bool progress_in_bar = false, bool eta_enabled = true, bool items_per_second = false) : progress_in_bar(progress_in_bar), eta_enabled(eta_enabled), items_per_second(items_per_second) {}
     };
 
     struct Themes {
@@ -3486,16 +3501,11 @@ public:
         }
 
         static Theme minimal() {
-            return {
-                .fill = '=',
-                .empty = ' ',
-                .left =  '[',
-                .right = ']'
-            };
+            return {'=', ' ', '[', ']'};
         }
     };
 
-    ProgressBar(size_t total, size_t width = 50, Theme theme = Themes::classic(), Options options = {.progress_in_bar=false,.eta_enabled=true,.items_per_second=false}) : total_(total), value_(0), width_(width), theme_(theme), options_(options) {
+    ProgressBar(size_t total, size_t width = 50, Theme theme = Themes::classic(), Options options = {false,true,false}) : total_(total), value_(0), width_(width), theme_(theme), options_(options) {
 #ifdef _WIN32
         linea::__detail::enableANSI();
 #endif
@@ -3729,12 +3739,15 @@ public:
     };
 
     struct Theme {
-        std::string horizontal = "-";
-        std::string vertical = "|";
-        std::string corner = "+";
-        std::string padding = " ";
+        std::string horizontal;
+        std::string vertical;
+        std::string corner;
+        std::string padding;
 
-        bool header_separator = true;
+        bool header_separator;
+
+        Theme(std::string horizontal = "-", std::string vertical = "|", std::string corner = "+", std::string padding = " ", bool header_separator = true)
+            : horizontal(horizontal), vertical(vertical), corner(corner), padding(padding), header_separator(header_separator) {}
     };
 
     struct Themes {
@@ -3743,12 +3756,7 @@ public:
         }
 
         static Theme minimal() {
-            return {
-                .horizontal = "",
-                .vertical = " ",
-                .corner = "",
-                .padding = " "
-            };
+            return {"", " ", "", " "};
         }
     };
 
